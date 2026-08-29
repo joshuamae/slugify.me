@@ -82,6 +82,11 @@ The example is a style reference, not a requirement to introduce a particular co
 - Do not rewrite history, reset the worktree, or create a commit unless the user explicitly asks.
 - Before handing off, summarize changed files and verification results.
 
+## GitHub CLI and command formatting
+
+- Never use heredocs for `gh` CLI commands. Use explicit flags such as `--title`, `--body`, and `--label` with shell-safe quoting instead.
+- Always provide complete, properly formatted, copy/paste-ready `git` and `gh` CLI commands, including the repository or branch context when it is relevant.
+
 ## Boundaries
 
 ### Always do
