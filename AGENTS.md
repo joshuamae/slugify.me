@@ -9,39 +9,43 @@ You are the maintainer and developer for slugify.me. Keep changes focused, acces
 
 ## Commands
 
-Run commands from the repository root. Treat `package.json` as the source of truth for the scripts and dependency versions; this checkout is currently being scaffolded and may not contain every script listed below yet.
+Run commands from the repository root. Treat `package.json` as the source of truth for scripts and dependency versions. This checkout is scaffolded as a React Router Framework Mode SPA.
 
 ```sh
 npm install
 npm run dev
 npm run build
 npm run preview
+npm run check
 npm run lint
 npm run typecheck
 npm test
 ```
 
-- `npm install` installs the project dependencies.
-- `npm run dev` starts the Vite development server.
-- `npm run build` creates the production build.
-- `npm run preview` serves the production build locally.
-- `npm run lint`, `npm run typecheck`, and `npm test` are expected quality checks when those scripts are defined.
-- If a script is missing, inspect the available npm scripts and report the limitation instead of inventing a passing result.
+- `npm install` installs the project dependencies
+- `npm run dev` starts the React Router development server
+- `npm run build` creates the production SPA in `build/client/`
+- `npm run preview` serves the production build locally
+- `npm run check` runs type checking, linting, formatting checks, and tests
+- `npm run lint`, `npm run typecheck`, and `npm test` run individual quality checks
+- If a script is missing, inspect the available npm scripts and report the limitation instead of inventing a passing result
 
 ## Project knowledge
 
 - **Product:** An open-source, no-ads web app for generating slugs for URLs and other text identifiers.
 - **Current behavior:** A user enters text and sees the resulting slug update in real time.
-- **Runtime:** Client-side browser application. Do not add network requests or persistence without explicit approval.
+- **Runtime:** Client-side browser application using React Router SPA Mode with `ssr: false`. Do not add network requests or persistence without explicit approval.
 - **Tech stack:** React, React Router, TypeScript, Vite, and npm. Use the versions and dependencies declared by the repository rather than guessing versions.
-- **Expected structure:**
-  - `src/` – React components, routes, and slug-generation logic.
-  - `public/` – static assets served without processing.
-  - `index.html` – Vite application entry point.
-  - `package.json` – npm scripts and dependencies.
-  - `vite.config.*` and `tsconfig*.json` – build and TypeScript configuration.
-  - `README.md`, `AGENTS.md`, and `LICENSE` – project documentation and licensing.
-- The current checkout contains only `LICENSE`; update this guide when the actual scaffold establishes different paths or commands.
+- **Current structure:**
+  - `app/` – React Router application source, including the document shell, route configuration and modules, feature code, shared components, styles, and tests
+  - `app/root.tsx` – source document shell and application outlet
+  - `app/routes.ts` – route configuration for route modules under `app/routes/`
+  - `public/` – static assets served without processing
+  - `react-router.config.ts` – React Router Framework Mode configuration, including SPA Mode
+  - `vite.config.ts` and `tsconfig.json` – build and TypeScript configuration
+  - `package.json` – npm scripts and dependencies
+  - `README.md`, `AGENTS.md`, and `LICENSE` – project documentation and licensing
+- **Generated SPA entry:** There is no checked-in root `index.html`; `npm run build` renders the root route at build time and writes the deployable entry to `build/client/index.html`
 
 ## Development standards
 
@@ -113,6 +117,6 @@ The example is a style reference, not a requirement to introduce a particular co
 - Edit any file unless the user has given explicit authorization to do so.
 - Read `.env` files or otherwise inspect their contents.
 - Commit secrets, API keys, credentials, or `.env` files containing sensitive values.
-- Modify `node_modules/` or generated build output such as `dist/` by hand.
+- Modify `node_modules/` or generated build output such as `build/` by hand.
 - Delete tests or hide failures without authorization.
 - Claim that a command passed when it was not run or its script was not configured.

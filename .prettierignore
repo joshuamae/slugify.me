@@ -8,3 +8,4 @@ components.json
 tsconfig.json
 .prettierrc.json
 .github/
+app/components/
