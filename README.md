@@ -1,3 +1,4 @@
+[![Netlify Status](https://api.netlify.com/api/v1/badges/939a795d-2add-4f4c-ab04-ca986d843ae6/deploy-status)](https://app.netlify.com/projects/slugify-me/deploys)
 # slugify.me
 
 slugify.me is a simple, open-source, no-ads web app for turning text into URL-friendly slugs in real time
