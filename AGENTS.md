@@ -95,6 +95,19 @@ The example is a style reference, not a requirement to introduce a particular co
 - Never use heredocs for `gh` CLI commands. Use explicit flags such as `--title`, `--body`, and `--label` with shell-safe quoting instead.
 - Always provide complete, properly formatted, copy/paste-ready `git` and `gh` CLI commands, including the repository or branch context when it is relevant.
 
+## File modification authorization gate
+
+- Treat every request as read-only by default
+- Modify files only when the user's current message contains an affirmative, scoped authorization using either “I authorize” or “you have permission”
+- The words “authorize” or “permission” do not count when negated, hypothetical, quoted, or used while describing this policy
+- Authorization applies only to the files and changes explicitly described in that message
+- Do not carry authorization forward from an earlier message
+- Requests to inspect, review, diagnose, plan, recommend, identify files, explain changes, or show a diff are read-only
+- Asking which files need to change never authorizes editing
+- Commands such as “fix,” “implement,” “update,” “create,” or “change” do not authorize editing unless accompanied by affirmative authorization
+- When authorization is absent or ambiguous, do not call editing tools, formatters, generators, installers, or commands that may modify project files
+- Present proposed changes and wait for explicit authorization
+
 ## Boundaries
 
 ### Always do
