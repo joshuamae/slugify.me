@@ -19,7 +19,7 @@ Generated slugs follow these rules:
 - Apostrophes and quotation marks are removed without splitting words (`don't` becomes `dont`)
 - Each run of whitespace, remaining punctuation, symbols, separators, or emoji becomes a single hyphen (`-`)
 - Leading and trailing hyphens are removed. Input containing only separators produces an empty slug
-- `C++` and `C#` are handled explicitly as `cpp` and `c-sharp` with more exceptions to come in the future
+- `C++` and `C#` are handled explicitly as `cpp` and `c-sharp`
 
 ## Tech stack
 
@@ -51,8 +51,6 @@ Create and preview a production build with:
 npm run build
 npm run preview
 ```
-
-The project is currently distributed from source; no npm package or release binaries are provided
 
 ## Code quality
 
@@ -101,6 +99,11 @@ The current client-side application does not require deployment secrets. Never
 commit Netlify tokens, credentials, API keys, or sensitive environment files. If a
 future build requires secrets, store them in Netlify's environment variable
 settings.
+
+## Known limitations
+
+- Character-specific replacements currently cover only `C++` and `C#`; other symbol-heavy terms follow the general separator rules
+- The project is distributed from source; no npm package or release binaries are provided
 
 ## License
 

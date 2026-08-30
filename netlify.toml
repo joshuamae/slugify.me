@@ -6,6 +6,12 @@ publish = "build/client"
 NODE_VERSION = "24"
 
 [[redirects]]
+from = "https://slugify-me.netlify.app/*"
+to = "https://slugify.me/:splat"
+status = 301
+force = true
+
+[[redirects]]
 from = "/*"
 to = "/index.html"
 status = 200

@@ -9,3 +9,4 @@ tsconfig.json
 .prettierrc.json
 .github/
 app/components/
+netlify.toml
