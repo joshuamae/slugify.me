@@ -1,4 +1,4 @@
-import type { Route } from './+types/home';
+import type { Route } from './+types/Home';
 import SlugGenerator from '../features/slug-generator/components/SlugGenerator';
 import { Card, CardContent, CardHeader, CardTitle } from '~/components/ui/card';
 
@@ -15,7 +15,7 @@ export function meta(_args: Route.MetaArgs) {
 
 export default function Home() {
 	return (
-		<main className="flex min-h-svh items-center px-4 py-10 sm:px-6 sm:py-16">
+		<main className="flex flex-1 items-center px-4 py-10 sm:px-6 sm:py-18">
 			<Card className="mx-auto w-full max-w-2xl">
 				<CardHeader>
 					<CardTitle>

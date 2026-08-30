@@ -9,6 +9,8 @@ import {
 
 import type { Route } from './+types/root';
 import './app.css';
+import SiteHeader from '~/components/layouts/SiteHeader';
+import SiteFooter from '~/components/layouts/SiteFooter';
 
 export function Layout({ children }: { children: React.ReactNode }) {
 	return (
@@ -32,7 +34,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
 }
 
 export default function App() {
-	return <Outlet />;
+	return (
+		<div className="flex min-h-svh flex-col">
+			<SiteHeader />
+			<Outlet />
+			<SiteFooter />
+		</div>
+	);
 }
 
 export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
