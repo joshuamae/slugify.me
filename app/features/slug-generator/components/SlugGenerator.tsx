@@ -9,10 +9,14 @@ export default function SlugGenerator() {
 	return (
 		<div className="flex flex-col gap-4 p-5">
 			<Input
+				aria-label="Text to slugify"
+				placeholder="Enter text"
 				value={text}
 				onChange={(event) => setText(event.target.value)}
 			/>
-			<output aira-live="polite">{slug}</output>
+			<output aria-label="Generated slug" aria-live="polite">
+				{slug}
+			</output>
 		</div>
 	);
 }
