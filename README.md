@@ -74,7 +74,32 @@ npm run format
 
 ## Deployment
 
-slugify.me will be deployed using [Netlify](https://www.netlify.com/)
+slugify.me is deployed as a static single-page application using
+[Netlify](https://www.netlify.com/). The repository's [`netlify.toml`](netlify.toml)
+runs `npm run build`, publishes `build/client`, and rewrites unmatched requests to
+the generated `index.html` so React Router can handle client-side routes.
+
+### Connect the repository
+
+1. Sign in to Netlify and select **Add new project**
+2. Select **Import an existing project**, then choose GitHub
+3. Authorize Netlify to access `joshuamae/slugify.me` and select the repository
+4. Select `main` as the production branch
+5. Confirm that Netlify reads `npm run build` and `build/client` from `netlify.toml`
+6. Publish the project to create the first production deployment
+
+After the repository is connected, each push to `main` triggers a production
+deployment using the committed Netlify configuration.
+
+### Connect a custom domain
+
+In the Netlify project, open **Domain management**, select **Add a domain**, and
+follow the prompts to connect an existing domain or register a new one.
+
+The current client-side application does not require deployment secrets. Never
+commit Netlify tokens, credentials, API keys, or sensitive environment files. If a
+future build requires secrets, store them in Netlify's environment variable
+settings.
 
 ## License
 
