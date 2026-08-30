@@ -283,12 +283,11 @@ export default function PrivacyPolicy() {
 							The site is hosted on Netlify, whose Observability
 							feature records your IP address and user-agent
 							details, including information about your browser
-							and device. Netlify does not give users the option to
-							turn that off.
+							and device. Netlify does not give users the option
+							to turn that off.
 						</p>
 						<p>
-							I haven't added any ads or tracking to this
-							project.
+							I haven't added any ads or tracking to this project.
 						</p>
 					</CardContent>
 				</Card>
