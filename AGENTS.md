@@ -68,6 +68,10 @@ export function SlugPreview({ value }: SlugPreviewProps) {
 
 The example is a style reference, not a requirement to introduce a particular component or function name. Preserve the repository's established API when one exists.
 
+## Writing style
+
+- All bullet points written as concise fragments without trailing periods
+
 ## Testing and verification
 
 - Run the relevant configured checks after making changes and report commands that could not run.

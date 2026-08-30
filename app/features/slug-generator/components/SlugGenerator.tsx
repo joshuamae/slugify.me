@@ -1,4 +1,9 @@
 import { Input } from '~/components/ui/input';
+import {
+	Field,
+	FieldGroup,
+	FieldLabel,
+} from '~/components/ui/field';
 import { useState } from 'react';
 import { slugify } from '~/features/slug-generator/utils/slugify';
 
@@ -8,15 +13,34 @@ export default function SlugGenerator() {
 
 	return (
 		<div className="flex flex-col gap-4 p-5">
+			<Field>
+				<FieldLabel htmlFor="text-to-slugify">
+					Text to slugify
+				</FieldLabel>
 			<Input
-				aria-label="Text to slugify"
+				id="text-to-slugify"
 				placeholder="Enter text"
 				value={text}
 				onChange={(event) => setText(event.target.value)}
 			/>
-			<output aria-label="Generated slug" aria-live="polite">
-				{slug}
-			</output>
+			</Field>
+
+			<Field>
+				<FieldLabel
+					htmlFor="generated-slug"
+				>
+					Generated slug
+				</FieldLabel>
+				<output
+					id="generated-slug"
+					htmlFor="text-to-slugify"
+					aria-live="polite"
+					aria-atomic="true"
+				>
+					{slug || 'Your slug will appear here'}
+				</output>
+			</Field>
+
 		</div>
 	);
 }
