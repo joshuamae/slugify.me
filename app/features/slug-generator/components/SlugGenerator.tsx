@@ -8,7 +8,7 @@ export default function SlugGenerator() {
 	const slug = slugify(text);
 
 	return (
-		<FieldGroup className="flex flex-col gap-4 p-5">
+		<FieldGroup className="p-5">
 			<Field>
 				<FieldLabel htmlFor="text-to-slugify">
 					Text to slugify
