@@ -1,9 +1,5 @@
 import { Input } from '~/components/ui/input';
-import {
-	Field,
-	FieldGroup,
-	FieldLabel,
-} from '~/components/ui/field';
+import { Field, FieldGroup, FieldLabel } from '~/components/ui/field';
 import { useState } from 'react';
 import { slugify } from '~/features/slug-generator/utils/slugify';
 
@@ -12,25 +8,21 @@ export default function SlugGenerator() {
 	const slug = slugify(text);
 
 	return (
-		<div className="flex flex-col gap-4 p-5">
+		<FieldGroup className="flex flex-col gap-4 p-5">
 			<Field>
 				<FieldLabel htmlFor="text-to-slugify">
 					Text to slugify
 				</FieldLabel>
-			<Input
-				id="text-to-slugify"
-				placeholder="Enter text"
-				value={text}
-				onChange={(event) => setText(event.target.value)}
-			/>
+				<Input
+					id="text-to-slugify"
+					placeholder="Enter text"
+					value={text}
+					onChange={(event) => setText(event.target.value)}
+				/>
 			</Field>
 
 			<Field>
-				<FieldLabel
-					htmlFor="generated-slug"
-				>
-					Generated slug
-				</FieldLabel>
+				<FieldLabel htmlFor="generated-slug">Generated slug</FieldLabel>
 				<output
 					id="generated-slug"
 					htmlFor="text-to-slugify"
@@ -40,7 +32,6 @@ export default function SlugGenerator() {
 					{slug || 'Your slug will appear here'}
 				</output>
 			</Field>
-
-		</div>
+		</FieldGroup>
 	);
 }
