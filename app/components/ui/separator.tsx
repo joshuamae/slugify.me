@@ -6,7 +6,7 @@ import { cn } from '~/lib/utils';
 
 function Separator({
 	className,
-	orientation = 'horizontal',
+	orientation = "horizontal",
 	...props
 }: React.ComponentProps<typeof SeparatorPrimitive>) {
 	return (
