@@ -25,7 +25,10 @@ processing statement. Each page defines its own title and description.
 
 Slug generation happens locally in your browser. Text entered into the generator
 is not uploaded or saved by the application, and there are no ads. The Privacy
-Policy describes hosting-related request information separately.
+Policy describes hosting-related request information separately. A shadcn TL;DR
+card appears before the policy heading and summarizes browser-local processing,
+open-source verification, Netlify Observability logging, and the absence of ads
+or tracking added by the project.
 
 ## Site structure
 
@@ -80,6 +83,8 @@ npm run build
 npm run preview
 ```
 
+Netlify deployment settings and SPA fallback routing are defined in `netlify.toml`.
+
 ## Code quality
 
 ESLint checks JavaScript, TypeScript, and React code for correctness, while
@@ -108,41 +113,6 @@ active-link attributes and styling, metadata exports, and back navigation.
 These Node-based tests do not simulate keyboard input, screen readers, browser
 hydration, responsive layouts, or the hosting platform's fallback behavior. Verify
 those separately in a browser, including direct visits and refreshes on every route.
-
-## Deployment
-
-slugify.me is deployed as a static single-page application using
-[Netlify](https://www.netlify.com/). The repository's [`netlify.toml`](netlify.toml)
-runs `npm run build`, publishes `build/client`, and rewrites unmatched requests to
-the generated `index.html` so React Router can handle client-side routes.
-
-The SPA fallback applies to `/about`, `/faq`, and `/privacy-policy` as well as `/`.
-Keep this fallback when changing hosts so direct visits and refreshes reach the
-application instead of a host-level 404. The application runs in React Router
-Framework SPA Mode with `ssr: false`; the production entry is generated at
-`build/client/index.html` rather than checked in at the repository root.
-
-### Connect the repository
-
-1. Sign in to Netlify and select **Add new project**
-2. Select **Import an existing project**, then choose GitHub
-3. Authorize Netlify to access `joshuamae/slugify.me` and select the repository
-4. Select `main` as the production branch
-5. Confirm that Netlify reads `npm run build` and `build/client` from `netlify.toml`
-6. Publish the project to create the first production deployment
-
-After the repository is connected, each push to `main` triggers a production
-deployment using the committed Netlify configuration.
-
-### Connect a custom domain
-
-In the Netlify project, open **Domain management**, select **Add a domain**, and
-follow the prompts to connect an existing domain or register a new one.
-
-The current client-side application does not require deployment secrets. Never
-commit Netlify tokens, credentials, API keys, or sensitive environment files. If a
-future build requires secrets, store them in Netlify's environment variable
-settings.
 
 ## Known limitations
 
