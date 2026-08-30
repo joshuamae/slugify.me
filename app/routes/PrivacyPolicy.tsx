@@ -268,6 +268,31 @@ export default function PrivacyPolicy() {
 	return (
 		<main className="flex flex-1 px-4 py-10 sm:px-6 sm:py-18">
 			<article className="mx-auto flex min-w-0 w-full max-w-3xl flex-col gap-8 text-sm leading-7 text-muted-foreground sm:text-base">
+				<Card role="region" aria-labelledby="privacy-tldr">
+					<CardHeader>
+						<CardTitle id="privacy-tldr">TL;DR</CardTitle>
+					</CardHeader>
+					<CardContent className="flex flex-col gap-4">
+						<p>
+							I don't collect or send the text you enter to a
+							server. Your slugs are generated entirely in your
+							browser, and the code is open source so you can
+							check it yourself.
+						</p>
+						<p>
+							The site is hosted on Netlify, whose Observability
+							feature records your IP address and user-agent
+							details, including information about your browser
+							and device. Netlify does not give users the option to
+							turn that off.
+						</p>
+						<p>
+							I haven't added any ads or tracking to this
+							project.
+						</p>
+					</CardContent>
+				</Card>
+
 				<header className="flex flex-col gap-3">
 					<h1 className="font-heading text-3xl font-semibold tracking-tight text-foreground">
 						Privacy Policy
@@ -578,7 +603,7 @@ export default function PrivacyPolicy() {
 									Location Data.{' '}
 								</strong>
 								We collect location data such as information
-								about your device&apos;s location, which can be
+								about your device's location, which can be
 								either precise or imprecise. How much
 								information we collect depends on the type and
 								settings of the device you use to access the
@@ -618,7 +643,7 @@ export default function PrivacyPolicy() {
 					<ul className="list-disc pl-6">
 						<li>
 							<strong className="text-foreground">
-								To save or protect an individual&apos;s vital
+								To save or protect an individual's vital
 								interest.{' '}
 							</strong>
 							We may process your information when necessary to
@@ -1625,7 +1650,7 @@ export default function PrivacyPolicy() {
 				</PolicySection>
 
 				<p className="text-xs">
-					This Privacy Policy was created using Termly&apos;s{' '}
+					This Privacy Policy was created using Termly's{' '}
 					<PolicyLink href="https://termly.io/products/privacy-policy-generator/">
 						Privacy Policy Generator
 					</PolicyLink>
