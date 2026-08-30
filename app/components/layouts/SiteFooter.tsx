@@ -1,4 +1,4 @@
-import { Link } from 'react-router';
+import { NavLink } from 'react-router';
 
 import {
     LinkButton,
@@ -22,7 +22,7 @@ export default function SiteFooter() {
                 <nav aria-label="Footer navigation">
                     <ul className="flex items-center gap-1">
                         <li>
-                            <Link
+                            <NavLink
                                 to="/about"
                                 className={buttonVariants({
                                     variant: 'link',
@@ -30,10 +30,10 @@ export default function SiteFooter() {
                                 })}
                             >
                                 About
-                            </Link>
+                            </NavLink>
                         </li>
                         <li>
-                            <Link
+                            <NavLink
                                 to="/faq"
                                 className={buttonVariants({
                                     variant: 'link',
@@ -41,10 +41,10 @@ export default function SiteFooter() {
                                 })}
                             >
                                 FAQ
-                            </Link>
+                            </NavLink>
                         </li>
                         <li>
-                            <Link
+                            <NavLink
                                 to="/privacy-policy"
                                 className={buttonVariants({
                                     variant: 'link',
@@ -52,7 +52,7 @@ export default function SiteFooter() {
                                 })}
                             >
                                 Privacy Policy
-                            </Link>
+                            </NavLink>
                         </li>
 
                         <li>

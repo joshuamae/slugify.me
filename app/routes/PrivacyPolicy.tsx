@@ -51,7 +51,7 @@ const personalInformationCategories = [
 		category: 'A. Identifiers',
 		examples:
 			'Contact details, such as real name, alias, postal address, telephone or mobile contact number, unique personal identifier, online identifier, Internet Protocol address, email address, and account name',
-		collected: 'Yes',
+		collected: '',
 	},
 	{
 		category:
@@ -82,12 +82,12 @@ const personalInformationCategories = [
 		category: 'F. Internet or other similar network activity',
 		examples:
 			'Browsing history, search history, online behavior, interest data, and interactions with our and other websites, applications, systems, and advertisements',
-		collected: 'No',
+		collected: '',
 	},
 	{
 		category: 'G. Geolocation data',
 		examples: 'Device location',
-		collected: 'Yes',
+		collected: '',
 	},
 	{
 		category: 'H. Audio, electronic, sensory, or similar information',
@@ -114,7 +114,7 @@ const personalInformationCategories = [
 	},
 	{
 		category: 'L. Sensitive personal information',
-		examples: '—',
+		examples: '',
 		collected: 'No',
 	},
 ];
@@ -278,30 +278,9 @@ export default function PrivacyPolicy() {
 					</p>
 				</header>
 
-				<Card>
-					<CardHeader>
-						<CardTitle>
-							<h2>TL;DR</h2>
-						</CardTitle>
-					</CardHeader>
-					<CardContent className="flex flex-col gap-3">
-						<p>
-							I don't collect or send any data to a server when
-							you generate your slugs. The code can be verified
-							and there is no server side processing involved.
-						</p>
-						<p>
-							However, Netlify captures your IP address and User
-							agent details with their Observability feature. I
-							have no way of turning this off.
-						</p>
-						<p>There are no ads or tracking in this project.</p>
-					</CardContent>
-				</Card>
-
 				<div className="flex flex-col gap-4">
 					<p>
-						This Privacy Notice for __________ (&quot;
+						This Privacy Notice for Slugify.me (&quot;
 						<strong className="text-foreground">we</strong>,&quot;
 						&quot;<strong className="text-foreground">us</strong>
 						,&quot; or &quot;
@@ -317,11 +296,17 @@ export default function PrivacyPolicy() {
 					<ul className="flex list-disc flex-col gap-2 pl-6">
 						<li>
 							Visit our website at{' '}
-							<PolicyLink href="https://slugify.me/">
-								https://slugify.me/
+							<PolicyLink href="https://slugify.me">
+								https://slugify.me
 							</PolicyLink>{' '}
 							or any website of ours that links to this Privacy
 							Notice
+						</li>
+						<li>
+							Use Slugify.me. slugify.me converts titles, phrases,
+							filenames, and other text identifiers in real time.
+							It is designed to be fast, distraction-free, and
+							easy to understand.
 						</li>
 						<li>
 							Engage with us in other related ways, including any
@@ -336,7 +321,12 @@ export default function PrivacyPolicy() {
 						your privacy rights and choices. We are responsible for
 						making decisions about how your personal information is
 						processed. If you do not agree with our policies and
-						practices, please do not use our Services.
+						practices, please do not use our Services. If you still
+						have any questions or concerns, please contact us at{' '}
+						<PolicyLink href="mailto:privacy@slugify.me">
+							privacy@slugify.me
+						</PolicyLink>
+						.
 					</p>
 				</div>
 
@@ -655,7 +645,7 @@ export default function PrivacyPolicy() {
 					<div className="flex flex-col gap-4">
 						<PolicySubsection>
 							If you are located in the EU or UK, this section
-							applies to you
+							applies to you.
 						</PolicySubsection>
 						<p>
 							The General Data Protection Regulation (GDPR) and UK
@@ -706,7 +696,7 @@ export default function PrivacyPolicy() {
 					<div className="flex flex-col gap-4">
 						<PolicySubsection>
 							If you are located in Canada, this section applies
-							to you
+							to you.
 						</PolicySubsection>
 						<p>
 							We may process your information if you have given us
@@ -803,8 +793,33 @@ export default function PrivacyPolicy() {
 						third parties.
 					</ShortSummary>
 					<p>
-						We may need to share your personal information in the
-						following situations:
+						<strong className="text-foreground">
+							Vendors, Consultants, and Other Third-Party Service
+							Providers.{' '}
+						</strong>
+						We may share your data with third-party vendors, service
+						providers, contractors, or agents (&quot;third
+						parties&quot;) who perform services for us or on our
+						behalf and require access to such information to do that
+						work.
+					</p>
+					<p>
+						The third parties we may share personal information with
+						are as follows:
+					</p>
+					<ul className="list-disc pl-6">
+						<li>
+							<strong className="text-foreground">
+								Website Hosting
+							</strong>
+							<ul className="list-disc pl-6">
+								<li>Netlify</li>
+							</ul>
+						</li>
+					</ul>
+					<p>
+						We also may need to share your personal information in
+						the following situations:
 					</p>
 					<ul className="list-disc pl-6">
 						<li>
@@ -904,7 +919,11 @@ export default function PrivacyPolicy() {
 						our records. If you become aware of any data we may have
 						collected from children under age 18 or the equivalent
 						age as specified by law in your jurisdiction, please
-						contact us at __________.
+						contact us at{' '}
+						<PolicyLink href="mailto:contact@slugify.me">
+							contact@slugify.me
+						</PolicyLink>
+						.
 					</p>
 				</PolicySection>
 
@@ -960,6 +979,28 @@ export default function PrivacyPolicy() {
 							How to contact us:
 						</strong>
 					</p>
+					<ul className="flex list-disc flex-col gap-2 pl-6">
+						<li>
+							<strong className="text-foreground">Online:</strong>{' '}
+							<PolicyLink href="https://github.com/joshuamae/slugify.me/issues">
+								https://github.com/joshuamae/slugify.me/issues
+							</PolicyLink>
+						</li>
+						<li>
+							<strong className="text-foreground">Email:</strong>{' '}
+							<PolicyLink href="mailto:privacy@slugify.me">
+								privacy@slugify.me
+							</PolicyLink>
+						</li>
+						<li>
+							<strong className="text-foreground">Post:</strong>{' '}
+							See &quot;
+							<PolicyLink href="#contact">
+								How can you contact us about this notice?
+							</PolicyLink>
+							&quot;
+						</li>
+					</ul>
 					<PolicySubsection>
 						What happens after you complain
 					</PolicySubsection>
@@ -1046,6 +1087,14 @@ export default function PrivacyPolicy() {
 						processing of your personal information conducted in
 						reliance on lawful processing grounds other than
 						consent.
+					</p>
+					<p>
+						If you have questions or comments about your privacy
+						rights, you may email us at{' '}
+						<PolicyLink href="mailto:privacy@slugify.me">
+							privacy@slugify.me
+						</PolicyLink>
+						.
 					</p>
 				</PolicySection>
 
@@ -1141,6 +1190,7 @@ export default function PrivacyPolicy() {
 					</p>
 					<ul className="flex list-disc flex-col gap-2 pl-6">
 						<li>Category A - 1 Day</li>
+						<li>Category F - 1 Day</li>
 						<li>Category G - 1 Day</li>
 					</ul>
 					<PolicySubsection>
@@ -1189,12 +1239,30 @@ export default function PrivacyPolicy() {
 						&quot;selling&quot; of your personal information.
 					</p>
 					<p>
-						We have not disclosed, sold, or shared any personal
-						information to third parties for a business or
-						commercial purpose in the preceding twelve (12) months.
-						We will not sell or share personal information in the
-						future belonging to website visitors, users, and other
-						consumers.
+						We have not sold or shared any personal information to
+						third parties for a business or commercial purpose in
+						the preceding twelve (12) months. We have disclosed the
+						following categories of personal information to third
+						parties for a business or commercial purpose in the
+						preceding twelve (12) months:
+					</p>
+					<ul className="flex list-disc flex-col gap-2 pl-6">
+						<li>Category A. Identifiers</li>
+						<li>
+							Category F. Internet or other electronic network
+							activity information
+						</li>
+						<li>Category G. Geolocation data</li>
+					</ul>
+					<p>
+						The categories of third parties to whom we disclosed
+						personal information for a business or commercial
+						purpose can be found under &quot;
+						<PolicyLink href="#whoshare">
+							When and with whom do we share your personal
+							information?
+						</PolicyLink>
+						&quot;
 					</p>
 					<PolicySubsection>Your Rights</PolicySubsection>
 					<p>
@@ -1308,6 +1376,10 @@ export default function PrivacyPolicy() {
 						<PolicyLink href={dataSubjectAccessRequestUrl}>
 							data subject access request
 						</PolicyLink>
+						, by emailing us at{' '}
+						<PolicyLink href="mailto:contact@slugify.me">
+							contact@slugify.me
+						</PolicyLink>
 						, by visiting{' '}
 						<PolicyLink href="https://github.com/joshuamae/slugify.me/issues">
 							https://github.com/joshuamae/slugify.me/issues
@@ -1348,9 +1420,12 @@ export default function PrivacyPolicy() {
 					<p>
 						Under certain US state data protection laws, if we
 						decline to take action regarding your request, you may
-						appeal our decision by emailing us at __________. We
-						will inform you in writing of any action taken or not
-						taken in response to the appeal, including a written
+						appeal our decision by emailing us at{' '}
+						<PolicyLink href="mailto:privacy@slugify.me">
+							privacy@slugify.me
+						</PolicyLink>
+						. We will inform you in writing of any action taken or
+						not taken in response to the appeal, including a written
 						explanation of the reasons for the decisions. If your
 						appeal is denied, you may submit a complaint to your
 						state attorney general.
@@ -1512,11 +1587,17 @@ export default function PrivacyPolicy() {
 				>
 					<p>
 						If you have questions or comments about this notice, you
-						may contact us by post at:
+						may email us at{' '}
+						<PolicyLink href="mailto:contact@slugify.me">
+							contact@slugify.me
+						</PolicyLink>{' '}
+						or contact us by post at:
 					</p>
 					<address className="flex flex-col not-italic">
-						<span>__________</span>
-						<span>__________</span>
+						<span>Slugify.me</span>
+						<span>177a Bleeker St</span>
+						<span>New York, New York 10012</span>
+						<span>United States</span>
 					</address>
 				</PolicySection>
 
@@ -1548,7 +1629,6 @@ export default function PrivacyPolicy() {
 					<PolicyLink href="https://termly.io/products/privacy-policy-generator/">
 						Privacy Policy Generator
 					</PolicyLink>
-					.
 				</p>
 			</article>
 		</main>
