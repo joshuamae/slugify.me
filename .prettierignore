@@ -1,0 +1,9 @@
+.agents/
+package.json
+*-lock.json
+AGENTS.md
+*.config.ts
+README.md
+components.json
+tsconfig.json
+.prettierrc.json
