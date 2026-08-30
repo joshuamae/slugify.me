@@ -128,6 +128,7 @@ The example is a style reference, not a requirement to introduce a particular co
 ### Never do
 
 - Edit any file unless the user has given explicit authorization to do so.
+- Edit or suggest changes to shadcn-managed component files under `app/components/ui/`; use their documented APIs and compose them from application or feature code instead
 - Read `.env` files or otherwise inspect their contents.
 - Commit secrets, API keys, credentials, or `.env` files containing sensitive values.
 - Modify `node_modules/` or generated build output such as `build/` by hand.
