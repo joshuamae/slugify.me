@@ -8,6 +8,18 @@ slugify.me is a simple, open-source, no-ads web app for turning text into URL-fr
 - Useful for URL paths, filenames, and other text identifiers.
 - Runs in the browser with no ads or backend required for its current functionality.
 
+## Slug rules
+
+Generated slugs follow these rules:
+
+- Text is converted to lowercase.
+- Unicode text is normalized and combining diacritic marks are removed (`Crème brûlée` becomes `creme-brulee`).
+- Unicode letters and numbers are preserved (`東京 2026` becomes `東京-2026`).
+- Apostrophes and quotation marks are removed without splitting words (`don't` becomes `dont`).
+- Each run of whitespace, remaining punctuation, symbols, separators, or emoji becomes a single hyphen (`-`).
+- Leading and trailing hyphens are removed. Input containing only separators produces an empty slug.
+- `C++` and `C#` are handled explicitly as `cpp` and `c-sharp` with more exceptions to come in the future
+
 ## Tech stack
 
 - React

@@ -1,7 +1,6 @@
 const charReplacements = new Map<string, string>([
 	['c++', 'cpp'],
 	['c#', 'c-sharp'],
-	['c++', 'cpp'],
 ]);
 
 /**
