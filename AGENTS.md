@@ -40,7 +40,7 @@ npm test
   - `index.html` – Vite application entry point.
   - `package.json` – npm scripts and dependencies.
   - `vite.config.*` and `tsconfig*.json` – build and TypeScript configuration.
-  - `README.md`, `agents.md`, and `LICENSE` – project documentation and licensing.
+  - `README.md`, `AGENTS.md`, and `LICENSE` – project documentation and licensing.
 - The current checkout contains only `LICENSE`; update this guide when the actual scaffold establishes different paths or commands.
 
 ## Development standards
@@ -107,6 +107,7 @@ The example is a style reference, not a requirement to introduce a particular co
 ### Never do
 
 - Edit any file unless the user has given explicit authorization to do so.
+- Read `.env` files or otherwise inspect their contents.
 - Commit secrets, API keys, credentials, or `.env` files containing sensitive values.
 - Modify `node_modules/` or generated build output such as `dist/` by hand.
 - Delete tests or hide failures without authorization.

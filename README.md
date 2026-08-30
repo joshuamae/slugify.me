@@ -41,6 +41,25 @@ npm run preview
 
 The project is currently distributed from source; no npm package or release binaries are provided.
 
+## Code quality
+
+ESLint checks JavaScript, TypeScript, and React code for correctness, while
+Prettier handles formatting. Run the complete set of checks with:
+
+```sh
+npm run check
+```
+
+The checks can also be run or fixed individually:
+
+```sh
+npm run typecheck
+npm run lint
+npm run lint:fix
+npm run format:check
+npm run format
+```
+
 ## Deployment
 
 slugify.me will be deployed using [Netlify](https://www.netlify.com/).
