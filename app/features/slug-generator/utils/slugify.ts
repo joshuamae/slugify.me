@@ -17,7 +17,7 @@ const charReplacements = new Map<string, string>([
 export function slugify(input: string): string {
 	// Normalize, accent deletion, and lowercase
 	let slug = input
-		.normalize('NFKC')
+		.normalize('NFKD')
 		.replace(/\p{M}+/gu, '')
 		.toLowerCase();
 
