@@ -1,16 +1,17 @@
-import { Link, NavLink } from 'react-router';
+import { NavLink } from 'react-router';
 import { LinkButton, buttonVariants } from "~/components/ui/button"
 import { Separator } from '~/components/ui/separator';
 export default function SiteHeader() {
     return (
         <>
             <header className="flex mx-auto h-16 w-full max-w-7xl items-center gap-6 px-4 sm:px-6">
-                <Link
+                <NavLink
                     to="/"
+                    end
                     className="shrink-0 font-heading text-lg font-semibold tracking-tight"
                 >
                     slugify.me
-                </Link>
+                </NavLink>
 
                 <nav aria-label="primary-navigation">
                     <ul className="flex gap-1">
