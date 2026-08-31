@@ -8,12 +8,13 @@ export default function SiteHeader() {
                 <NavLink
                     to="/"
                     end
-                    className="shrink-0 font-heading text-lg font-semibold tracking-tight"
+                    className="inline-flex shrink-0 items-center gap-2 font-heading text-lg font-semibold tracking-tight"
                 >
-                    slugify.me
+                    <img src="/favicon.svg" alt="" className="h-10 w-auto" />
+                    <span>slugify.me</span>
                 </NavLink>
 
-                <nav aria-label="primary-navigation">
+                <nav aria-label="primary-navigation" className="ml-auto">
                     <ul className="flex gap-1">
                         <li>
                             <NavLink
@@ -47,7 +48,6 @@ export default function SiteHeader() {
                     rel="noreferrer"
                     variant="outline"
                     size="icon"
-                    className="ml-auto"
                     aria-label="View source on GitHub"
                 >
                     <svg
