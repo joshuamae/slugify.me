@@ -15,7 +15,7 @@ slugify.me is a simple, open-source, no-ads web app for turning text into URL-fr
 | --- | --- | --- |
 | `/` | Slug Generator | Converts text immediately as you type or paste, with a copy button for the result |
 | `/about` | About | Project background, design principles, and open-source information |
-| `/faq` | Frequently Asked Questions | Answers about slug rules, supported characters, privacy, and common uses |
+| `/faq` | Frequently Asked Questions | Answers about slug rules, supported characters, privacy, common uses, and the leaf sheep icon and logo |
 | `/privacy-policy` | Privacy Policy | Privacy information and hosting-related disclosures |
 
 The shared header links the **slugify.me** brand back to the generator and provides
@@ -39,6 +39,16 @@ or tracking added by the project.
 - `app/features/slug-generator/` — Generator UI, pure slug conversion logic, and slug tests
 - `app/routes.test.tsx` — Route rendering, metadata, shared layout, and navigation tests
 - `public/` — Static assets
+
+## Icon and image credits
+
+The icon and logo represent a leaf sheep (*Costasiella kuroshimae*), a tiny sea slug.
+The FAQ shows the icon beside the leaf sheep plush image used as its reference,
+with descriptive alt text and captions for both images.
+
+The plush image comes from [WWF’s “What is a leaf sheep?” article](https://www.worldwildlife.org/resources/facts/what-is-a-leaf-sheep/)
+and is credited to **© WWF-US / WWFGifts**. The logo was created in Affinity Designer
+using that image as a reference. Both assets are served locally from `public/`.
 
 ## Slug rules
 
