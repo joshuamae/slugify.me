@@ -40,12 +40,6 @@ or tracking added by the project.
 - `app/routes.test.tsx` — Route rendering, metadata, shared layout, and navigation tests
 - `public/` — Static assets
 
-## Icon and logo
-
-The icon and logo represent a leaf sheep (*Costasiella kuroshimae*), a tiny sea slug.
-The logo was created in Affinity Designer and is served locally from `public/` as
-an SVG with a multi-size ICO fallback.
-
 ## Slug rules
 
 Generated slugs follow these rules:
