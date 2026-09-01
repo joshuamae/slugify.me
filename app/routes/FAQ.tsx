@@ -51,66 +51,7 @@ const frequentlyAskedQuestions = [
 	{
 		id: 'free-and-open-source',
 		question: 'Is slugify.me free?',
-		answer: 'Yes. slugify.me is free, has no ads, and is open-source under the GNU Affero General Public License.',
-	},
-	{
-		id: 'icon-and-logo',
-		question: 'What are the icon and logo?',
-		answer: (
-			<>
-				<p>
-					They represent a leaf sheep (<i>Costasiella kuroshimae</i>),
-					a tiny sea slug with a sheep-like face and green, leaf-like
-					structures on its back. Learn more in{' '}
-					<a
-						href="https://www.worldwildlife.org/resources/facts/what-is-a-leaf-sheep/"
-						className="rounded-sm focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-ring"
-					>
-						WWF’s “What is a leaf sheep?” article
-					</a>
-					.
-				</p>
-				<p>
-					I sourced the leaf sheep plush image from that article and
-					created the logo in Affinity Designer using it as a
-					reference.
-				</p>
-				<div className="grid grid-cols-2 gap-3 sm:gap-4">
-					<figure className="flex min-w-0 flex-col gap-2">
-						<img
-							src="/favicon.svg"
-							alt="Illustrated leaf sheep face with purple feelers"
-							width={640}
-							height={480}
-							loading="lazy"
-							className="aspect-4/3 w-full rounded-lg bg-muted object-contain"
-						/>
-						<figcaption className="flex flex-col gap-1 text-muted-foreground">
-							<span className="font-medium text-foreground">
-								Icon and logo
-							</span>
-							<span>Created in Affinity Designer</span>
-						</figcaption>
-					</figure>
-					<figure className="flex min-w-0 flex-col gap-2">
-						<img
-							src="/leafsheep-plush-hych.jpeg"
-							alt="Green leaf sheep plush with purple feelers and pink-tipped leaves"
-							width={640}
-							height={480}
-							loading="lazy"
-							className="aspect-4/3 w-full rounded-lg bg-muted object-contain"
-						/>
-						<figcaption className="flex flex-col gap-1 text-muted-foreground">
-							<span className="font-medium text-foreground">
-								Source image
-							</span>
-							<span>© WWF-US / WWFGifts</span>
-						</figcaption>
-					</figure>
-				</div>
-			</>
-		),
+		answer: 'Yes. slugify.me is free, has no ads, and is open source under the GNU Affero General Public License.',
 	},
 ];
 

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg width="100%" height="100%" viewBox="0 0 2000 2000" version="1.1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" xml:space="preserve" xmlns:serif="http://www.serif.com/" style="fill-rule:evenodd;clip-rule:evenodd;stroke-linecap:round;stroke-linejoin:round;stroke-miterlimit:1.5;">
+    <g transform="matrix(1.815569,0,0,1.490378,-952.984431,-450.729692)">
+        <ellipse cx="1084.5" cy="1211" rx="417.5" ry="428" style="fill:rgb(138,178,55);stroke:black;stroke-width:0.6px;"/>
+    </g>
+    <g transform="matrix(1.168851,0,0,1.08024,-163.955281,-103.665939)">
+        <path d="M671,840L667,336" style="fill:none;stroke:black;stroke-width:14.81px;"/>
+    </g>
+    <g transform="matrix(1.168851,0,0,1.08024,-163.955281,-103.665939)">
+        <path d="M1356,848L1357,318" style="fill:none;stroke:black;stroke-width:14.81px;"/>
+    </g>
+    <g transform="matrix(1.168851,0,0,-1.05044,-152.266769,2915.50105)">
+        <path d="M1309.047,1562.25L714.953,1562.25C684.849,1529.186 669,1491.679 669,1453.5C669,1333.458 822.693,1236 1012,1236C1201.307,1236 1355,1333.458 1355,1453.5C1355,1491.679 1339.151,1529.186 1309.047,1562.25Z" style="fill:rgb(138,178,55);stroke:black;stroke-width:7.5px;"/>
+    </g>
+    <g transform="matrix(1.168851,0,0,1.08024,-163.955281,-103.665939)">
+        <ellipse cx="673.5" cy="238" rx="161.5" ry="115" style="fill:white;stroke:black;stroke-width:5.55px;"/>
+    </g>
+    <g transform="matrix(1.168851,0,0,1.08024,-179.150347,-122.030022)">
+        <ellipse cx="682" cy="249" rx="50" ry="40" style="stroke:black;stroke-width:0.89px;"/>
+    </g>
+    <g transform="matrix(1.168851,0,0,1.08024,635.538936,-119.869541)">
+        <ellipse cx="673.5" cy="238" rx="161.5" ry="115" style="fill:white;stroke:black;stroke-width:5.55px;"/>
+    </g>
+    <g transform="matrix(1.168851,0,0,1.08024,627.356978,-138.233624)">
+        <ellipse cx="682" cy="249" rx="50" ry="40" style="stroke:black;stroke-width:0.89px;"/>
+    </g>
+</svg>
