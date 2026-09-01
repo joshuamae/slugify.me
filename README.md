@@ -11,12 +11,12 @@ slugify.me is a simple, open-source, no-ads web app for turning text into URL-fr
 
 ## Pages and navigation
 
-| Route | Page | Purpose |
-| --- | --- | --- |
-| `/` | Slug Generator | Converts text immediately as you type or paste, with a copy button for the result |
-| `/about` | About | Project background, design principles, and open-source information |
-| `/faq` | Frequently Asked Questions | Answers about slug rules, supported characters, privacy, common uses, and the leaf sheep icon and logo |
-| `/privacy-policy` | Privacy Policy | Privacy information and hosting-related disclosures |
+| Route             | Page                       | Purpose                                                                           |
+|-------------------|----------------------------|-----------------------------------------------------------------------------------|
+| `/`               | Slug Generator             | Converts text immediately as you type or paste, with a copy button for the result |
+| `/about`          | About                      | Project background, design principles, and open-source information                |
+| `/faq`            | Frequently Asked Questions | Answers about slug rules, supported characters, privacy, and common uses          |
+| `/privacy-policy` | Privacy Policy             | Privacy information and hosting-related disclosures                               |
 
 The shared header links the **slugify.me** brand back to the generator and provides
 About, FAQ, and GitHub links. The shared footer includes About, FAQ, Privacy Policy,
