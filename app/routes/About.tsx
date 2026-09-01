@@ -10,6 +10,7 @@ import {
 	CardTitle,
 } from '~/components/ui/card';
 import { Separator } from '~/components/ui/separator';
+import { createPageMetadata } from '~/lib/siteMetadata';
 
 const principles = [
 	{
@@ -33,14 +34,12 @@ const principles = [
 ];
 
 export function meta(_args: Route.MetaArgs) {
-	return [
-		{ title: 'About | slugify.me' },
-		{
-			name: 'description',
-			content:
-				'Learn about slugify.me, a focused, open source, no-ads tool for generating URL-friendly slugs',
-		},
-	];
+	return createPageMetadata({
+		title: 'About | slugify.me',
+		description:
+			'Learn about slugify.me, a focused, open source, no-ads tool for generating URL-friendly slugs',
+		pathname: '/about',
+	});
 }
 
 export default function About() {

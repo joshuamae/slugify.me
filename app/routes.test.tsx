@@ -8,7 +8,7 @@ import {
 } from 'react-router';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import App from './root';
+import App, { links as documentLinks } from './root';
 import routeConfig from './routes';
 
 // Render the real route components without a DOM dependency. Browser interactions,
@@ -135,6 +135,27 @@ describe('site routes', () => {
 			name: 'description',
 			content: expect.stringMatching(/\S/),
 		});
+		expect(metadata).toContainEqual({
+			tagName: 'link',
+			rel: 'canonical',
+			href: `https://slugify.me${page.path}`,
+		});
+		expect(metadata).toContainEqual({
+			property: 'og:title',
+			content: page.title,
+		});
+		expect(metadata).toContainEqual({
+			property: 'og:url',
+			content: `https://slugify.me${page.path}`,
+		});
+		expect(metadata).toContainEqual({
+			property: 'og:image',
+			content: 'https://slugify.me/social-preview.png',
+		});
+		expect(metadata).toContainEqual({
+			name: 'twitter:card',
+			content: 'summary_large_image',
+		});
 	});
 
 	it('keeps the labelled generator and live output on the home route', () => {
@@ -153,6 +174,26 @@ describe('site routes', () => {
 		expect(output).toContain('aria-live="polite"');
 		expect(output).toContain('aria-atomic="true"');
 		expect(html).toContain('aria-label="Copy generated slug"');
+	});
+});
+
+describe('document asset links', () => {
+	it('keeps the existing favicons and adds an Apple touch icon', () => {
+		expect(documentLinks()).toEqual([
+			expect.objectContaining({
+				rel: 'icon',
+				href: '/favicon.ico',
+			}),
+			expect.objectContaining({
+				rel: 'icon',
+				href: '/slug-logo-v2.svg',
+			}),
+			expect.objectContaining({
+				rel: 'apple-touch-icon',
+				href: '/apple-touch-icon.png',
+				sizes: '180x180',
+			}),
+		]);
 	});
 });
 

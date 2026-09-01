@@ -6,6 +6,7 @@ import {
 	AccordionItem,
 	AccordionTrigger,
 } from '~/components/ui/accordion';
+import { createPageMetadata } from '~/lib/siteMetadata';
 
 const frequentlyAskedQuestions = [
 	{
@@ -56,14 +57,12 @@ const frequentlyAskedQuestions = [
 ];
 
 export function meta(_args: Route.MetaArgs) {
-	return [
-		{ title: 'Frequently Asked Questions | slugify.me' },
-		{
-			name: 'description',
-			content:
-				'Learn how slugify.me generates slugs, handles different characters, and keeps your text private',
-		},
-	];
+	return createPageMetadata({
+		title: 'Frequently Asked Questions | slugify.me',
+		description:
+			'Learn how slugify.me generates slugs, handles different characters, and keeps your text private',
+		pathname: '/faq',
+	});
 }
 
 export default function FAQ() {

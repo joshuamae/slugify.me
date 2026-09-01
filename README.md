@@ -38,7 +38,28 @@ or tracking added by the project.
 - `app/components/layouts/` — Shared `SiteHeader` and `SiteFooter` components
 - `app/features/slug-generator/` — Generator UI, pure slug conversion logic, and slug tests
 - `app/routes.test.tsx` — Route rendering, metadata, shared layout, and navigation tests
-- `public/` — Static assets
+- `public/` — Favicons, social images, and search discovery files
+
+## Search and browser metadata
+
+- `public/robots.txt` — Public crawler access and the production sitemap location
+- `public/sitemap.xml` — Canonical HTTPS URLs for every public page
+- `public/apple-touch-icon.png` — 180×180 home-screen and bookmark icon derived from the existing favicon
+- `public/social-preview.png` — 1200×630 Open Graph and Twitter preview image
+
+Each route publishes its canonical URL, page-specific title and description, and
+Open Graph and Twitter metadata. The document shell keeps the existing ICO and
+SVG favicons and links the Apple touch icon.
+
+When a public route is added, renamed, or removed, update `public/sitemap.xml`
+in the same change. Keep every sitemap URL on `https://slugify.me`, include only
+real public routes, and omit `<lastmod>` unless accurate modification dates can
+be maintained. Update `public/robots.txt` only if the sitemap location or crawler
+policy changes.
+
+The site does not include `site.webmanifest` because it is not offered as an
+installable or offline-capable web app. Add one only if that product scope
+changes, together with the required installable icons and related testing.
 
 ## Slug rules
 
