@@ -10,7 +10,7 @@ export default function SiteHeader() {
                     end
                     className="inline-flex shrink-0 items-center gap-2 font-heading text-lg font-semibold tracking-tight"
                 >
-                    <img src="/favicon.svg" alt="" className="h-10 w-auto" />
+                    <img src="/slug-logo-v2.svg" alt="" className="h-10 w-auto" />
                     <span>slugify.me</span>
                 </NavLink>
 

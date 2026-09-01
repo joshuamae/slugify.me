@@ -16,7 +16,18 @@ export function Layout({ children }: { children: React.ReactNode }) {
 	return (
 		<html lang="en">
 			<head>
-				<link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+				<link
+					rel="icon"
+					type="image/vnd.microsoft.icon"
+					href="/favicon.ico"
+					sizes="16x16 32x32 48x48 256x256"
+				/>
+				<link
+					rel="icon"
+					type="image/svg+xml"
+					href="/slug-logo-v2.svg"
+					sizes="any"
+				/>
 				<meta charSet="utf-8" />
 				<meta
 					name="viewport"

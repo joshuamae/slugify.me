@@ -40,15 +40,11 @@ or tracking added by the project.
 - `app/routes.test.tsx` — Route rendering, metadata, shared layout, and navigation tests
 - `public/` — Static assets
 
-## Icon and image credits
+## Icon and logo
 
 The icon and logo represent a leaf sheep (*Costasiella kuroshimae*), a tiny sea slug.
-The FAQ shows the icon beside the leaf sheep plush image used as its reference,
-with descriptive alt text and captions for both images.
-
-The plush image comes from [WWF’s “What is a leaf sheep?” article](https://www.worldwildlife.org/resources/facts/what-is-a-leaf-sheep/)
-and is credited to **© WWF-US / WWFGifts**. The logo was created in Affinity Designer
-using that image as a reference. Both assets are served locally from `public/`.
+The logo was created in Affinity Designer and is served locally from `public/` as
+an SVG with a multi-size ICO fallback.
 
 ## Slug rules
 
