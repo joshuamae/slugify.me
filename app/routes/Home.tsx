@@ -8,7 +8,7 @@ export function meta(_args: Route.MetaArgs) {
 		{
 			name: 'description',
 			content:
-				'Turn text into clean, URL-friendly slugs instantly with a free, open-source, ad-free web app',
+				'Turn text into clean, URL-friendly slugs instantly with a free, open source, ad-free web app',
 		},
 	];
 }

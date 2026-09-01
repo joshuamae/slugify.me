@@ -1,7 +1,7 @@
 [![Netlify Status](https://api.netlify.com/api/v1/badges/939a795d-2add-4f4c-ab04-ca986d843ae6/deploy-status)](https://app.netlify.com/projects/slugify-me/deploys)
 # slugify.me
 
-slugify.me is a simple, open-source, no-ads web app for turning text into URL-friendly slugs in real time
+slugify.me is a simple, open source, no-ads web app for turning text into URL-friendly slugs in real time
 
 ## Features
 
@@ -14,20 +14,20 @@ slugify.me is a simple, open-source, no-ads web app for turning text into URL-fr
 | Route             | Page                       | Purpose                                                                           |
 |-------------------|----------------------------|-----------------------------------------------------------------------------------|
 | `/`               | Slug Generator             | Converts text immediately as you type or paste, with a copy button for the result |
-| `/about`          | About                      | Project background, design principles, and open-source information                |
+| `/about`          | About                      | Project background, design principles, and open source information                |
 | `/faq`            | Frequently Asked Questions | Answers about slug rules, supported characters, privacy, and common uses          |
 | `/privacy-policy` | Privacy Policy             | Privacy information and hosting-related disclosures                               |
 
 The shared header links the **slugify.me** brand back to the generator and provides
 About, FAQ, and GitHub links. The shared footer includes About, FAQ, Privacy Policy,
-and GitHub links, together with the project's open-source, ad-free, browser-local
+and GitHub links, together with the project's open source, ad-free, browser-local
 processing statement. Each page defines its own title and description.
 
 Slug generation happens locally in your browser. Text entered into the generator
 is not uploaded or saved by the application, and there are no ads. The Privacy
 Policy describes hosting-related request information separately. A shadcn TL;DR
 card appears before the policy heading and summarizes browser-local processing,
-open-source verification, Netlify Observability logging, and the absence of ads
+open source verification, Netlify Observability logging, and the absence of ads
 or tracking added by the project.
 
 ## Site structure
