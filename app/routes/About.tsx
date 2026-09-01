@@ -38,7 +38,7 @@ export function meta(_args: Route.MetaArgs) {
 		{
 			name: 'description',
 			content:
-				'Learn about slugify.me, a focused, open-source, no-ads tool for generating URL-friendly slugs',
+				'Learn about slugify.me, a focused, open source, no-ads tool for generating URL-friendly slugs',
 		},
 	];
 }
@@ -146,7 +146,7 @@ export default function About() {
 						Open source
 					</h2>
 					<p className="text-muted-foreground">
-						slugify.me is open-source software licensed under the
+						slugify.me is open source software licensed under the
 						GNU Affero General Public License v3.0. You can inspect
 						the source, report an issue, or contribute on GitHub.
 					</p>

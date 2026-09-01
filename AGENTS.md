@@ -32,7 +32,7 @@ npm test
 
 ## Project knowledge
 
-- **Product:** An open-source, no-ads web app for generating slugs for URLs and other text identifiers.
+- **Product:** An open source, no-ads web app for generating slugs for URLs and other text identifiers.
 - **Current behavior:** A user enters text and sees the resulting slug update in real time.
 - **Runtime:** Client-side browser application using React Router SPA Mode with `ssr: false`. Do not add network requests or persistence without explicit approval.
 - **Tech stack:** React, React Router, TypeScript, Vite, and npm. Use the versions and dependencies declared by the repository rather than guessing versions.
@@ -75,6 +75,7 @@ The example is a style reference, not a requirement to introduce a particular co
 ## Writing style
 
 - All bullet points written as concise fragments without trailing periods
+- Write “open source” without a hyphen, including when it modifies a noun
 
 ## Testing and verification
 
@@ -112,7 +113,7 @@ The example is a style reference, not a requirement to introduce a particular co
 
 ### Always do
 
-- Preserve the no-ads, open-source product direction.
+- Preserve the no-ads, open source product direction.
 - Keep the current client-side, real-time conversion behavior intact unless the user requests a product change.
 - Update `README.md` when a user-visible command, feature, or requirement changes.
 - Prefer existing dependencies and project scripts.
