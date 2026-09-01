@@ -10,6 +10,7 @@ import {
 	CardTitle,
 } from '~/components/ui/card';
 import { Separator } from '~/components/ui/separator';
+import { createPageMetadata } from '~/lib/siteMetadata';
 
 const dataSubjectAccessRequestUrl =
 	'https://app.termly.io/dsar/def1acb5-162c-4db9-9154-7e83d330b36a';
@@ -120,14 +121,12 @@ const personalInformationCategories = [
 ];
 
 export function meta(_args: Route.MetaArgs) {
-	return [
-		{ title: 'Privacy Policy | slugify.me' },
-		{
-			name: 'description',
-			content:
-				'Read the slugify.me privacy policy and learn how personal information is collected, processed, retained, and protected',
-		},
-	];
+	return createPageMetadata({
+		title: 'Privacy Policy | slugify.me',
+		description:
+			'Read the slugify.me privacy policy and learn how personal information is collected, processed, retained, and protected',
+		pathname: '/privacy-policy',
+	});
 }
 
 function PolicyLink({ href, children, ...props }: ComponentProps<'a'>) {

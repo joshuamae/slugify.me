@@ -1,16 +1,15 @@
 import type { Route } from './+types/Home';
 import SlugGenerator from '../features/slug-generator/components/SlugGenerator';
 import { Card, CardContent, CardHeader, CardTitle } from '~/components/ui/card';
+import { createPageMetadata } from '~/lib/siteMetadata';
 
 export function meta(_args: Route.MetaArgs) {
-	return [
-		{ title: 'Slug Generator | slugify.me' },
-		{
-			name: 'description',
-			content:
-				'Turn text into clean, URL-friendly slugs instantly with a free, open source, ad-free web app',
-		},
-	];
+	return createPageMetadata({
+		title: 'Slug Generator | slugify.me',
+		description:
+			'Turn text into clean, URL-friendly slugs instantly with a free, open source, ad-free web app',
+		pathname: '/',
+	});
 }
 
 export default function Home() {
