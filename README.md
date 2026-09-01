@@ -39,6 +39,7 @@ or tracking added by the project.
 - `app/features/slug-generator/` — Generator UI, pure slug conversion logic, and slug tests
 - `app/routes.test.tsx` — Route rendering, metadata, shared layout, and navigation tests
 - `public/` — Favicons, social images, and search discovery files
+- `react-router.config.ts` — Client runtime and build-time pre-rendering configuration
 
 ## Search and browser metadata
 
@@ -47,9 +48,12 @@ or tracking added by the project.
 - `public/apple-touch-icon.png` — 180×180 home-screen and bookmark icon derived from the existing favicon
 - `public/social-preview.png` — 1200×630 Open Graph and Twitter preview image
 
-Each route publishes its canonical URL, page-specific title and description, and
-Open Graph and Twitter metadata. The document shell keeps the existing ICO and
-SVG favicons and links the Apple touch icon.
+Each route uses React 19 document metadata elements for its canonical URL,
+page-specific title and description, and social metadata. React Router
+pre-renders every public route so this metadata is present in the initial HTML
+without requiring JavaScript. The document shell publishes shared Open Graph
+and Twitter image metadata, keeps the existing ICO and SVG favicons, and links
+the Apple touch icon.
 
 When a public route is added, renamed, or removed, update `public/sitemap.xml`
 in the same change. Keep every sitemap URL on `https://slugify.me`, include only
@@ -104,7 +108,8 @@ npm run build
 npm run preview
 ```
 
-Netlify deployment settings and SPA fallback routing are defined in `netlify.toml`.
+Netlify deployment settings and the rewrite to React Router's generated
+`__spa-fallback.html` are defined in `netlify.toml`.
 
 ## Code quality
 

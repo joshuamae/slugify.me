@@ -1,12 +1,14 @@
-import type { Route } from './+types/FAQ';
-
 import {
 	Accordion,
 	AccordionContent,
 	AccordionItem,
 	AccordionTrigger,
 } from '~/components/ui/accordion';
-import { createPageMetadata } from '~/lib/siteMetadata';
+
+const pageTitle = 'Frequently Asked Questions | slugify.me';
+const pageDescription =
+	'Learn how slugify.me generates slugs, handles different characters, and keeps your text private';
+const canonicalUrl = 'https://slugify.me/faq';
 
 const frequentlyAskedQuestions = [
 	{
@@ -56,18 +58,18 @@ const frequentlyAskedQuestions = [
 	},
 ];
 
-export function meta(_args: Route.MetaArgs) {
-	return createPageMetadata({
-		title: 'Frequently Asked Questions | slugify.me',
-		description:
-			'Learn how slugify.me generates slugs, handles different characters, and keeps your text private',
-		pathname: '/faq',
-	});
-}
-
 export default function FAQ() {
 	return (
 		<main className="flex flex-1 px-4 py-10 sm:px-6 sm:py-18">
+			<title>{pageTitle}</title>
+			<meta name="description" content={pageDescription} />
+			<link rel="canonical" href={canonicalUrl} />
+			<meta property="og:title" content={pageTitle} />
+			<meta property="og:description" content={pageDescription} />
+			<meta property="og:url" content={canonicalUrl} />
+			<meta name="twitter:title" content={pageTitle} />
+			<meta name="twitter:description" content={pageDescription} />
+
 			<div className="mx-auto flex w-full max-w-2xl flex-col gap-8">
 				<header className="flex flex-col gap-2">
 					<h1 className="font-heading text-3xl font-semibold tracking-tight">
@@ -79,16 +81,25 @@ export default function FAQ() {
 					</p>
 				</header>
 
-				<Accordion defaultExpandedKeys={['what-is-a-slug']}>
-					{frequentlyAskedQuestions.map(
-						({ id, question, answer }) => (
-							<AccordionItem key={id} id={id}>
-								<AccordionTrigger>{question}</AccordionTrigger>
-								<AccordionContent>{answer}</AccordionContent>
-							</AccordionItem>
-						),
-					)}
-				</Accordion>
+				<section aria-labelledby="questions-heading">
+					<h2 id="questions-heading" className="sr-only">
+						Questions and answers
+					</h2>
+					<Accordion defaultExpandedKeys={['what-is-a-slug']}>
+						{frequentlyAskedQuestions.map(
+							({ id, question, answer }) => (
+								<AccordionItem key={id} id={id}>
+									<AccordionTrigger>
+										{question}
+									</AccordionTrigger>
+									<AccordionContent>
+										{answer}
+									</AccordionContent>
+								</AccordionItem>
+							),
+						)}
+					</Accordion>
+				</section>
 			</div>
 		</main>
 	);
