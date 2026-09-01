@@ -3,7 +3,6 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import {
 	createMemoryRouter,
 	RouterProvider,
-	type MetaFunction,
 	type RouteObject,
 } from 'react-router';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -15,7 +14,6 @@ import routeConfig from './routes';
 // responsive layout, and production-host rewrites still need browser verification.
 const routeModules = import.meta.glob<{
 	default: ComponentType;
-	meta: MetaFunction;
 }>('./routes/*.tsx', { eager: true });
 
 const routes: RouteObject[] = [
@@ -40,24 +38,32 @@ const pages = [
 		file: 'routes/Home.tsx',
 		heading: 'Turn text into a URL-friendly slug',
 		title: 'Slug Generator | slugify.me',
+		description:
+			'Turn text into clean, URL-friendly slugs instantly with a free, open source, ad-free web app',
 	},
 	{
 		path: '/about',
 		file: 'routes/About.tsx',
 		heading: 'About slugify.me',
 		title: 'About | slugify.me',
+		description:
+			'Learn about slugify.me, a focused, open source, no-ads tool for generating URL-friendly slugs',
 	},
 	{
 		path: '/faq',
 		file: 'routes/FAQ.tsx',
 		heading: 'Frequently asked questions',
 		title: 'Frequently Asked Questions | slugify.me',
+		description:
+			'Learn how slugify.me generates slugs, handles different characters, and keeps your text private',
 	},
 	{
 		path: '/privacy-policy',
 		file: 'routes/PrivacyPolicy.tsx',
 		heading: 'Privacy Policy',
 		title: 'Privacy Policy | slugify.me',
+		description:
+			'Read the slugify.me privacy policy and learn how personal information is collected, processed, retained, and protected',
 	},
 ];
 
@@ -115,47 +121,42 @@ describe('site routes', () => {
 		);
 	});
 
-	it.each(pages)('exports a title and description for $path', (page) => {
-		const router = createSiteRouter(page.path);
-		const metadata = routeModules[`./${page.file}`].meta({
-			location: router.state.location,
-			params: {},
-			loaderData: undefined,
-			matches: router.state.matches.map((match) => ({
-				id: match.route.id.replace(/\.tsx$/, ''),
-				pathname: match.pathname,
-				params: match.params,
-				loaderData: undefined,
-				meta: [],
-			})),
-		});
+	it.each(pages)('renders direct document metadata for $path', (page) => {
+		const html = renderSite(createSiteRouter(page.path));
+		const canonicalUrl = `https://slugify.me${page.path}`;
 
-		expect(metadata).toContainEqual({ title: page.title });
-		expect(metadata).toContainEqual({
-			name: 'description',
-			content: expect.stringMatching(/\S/),
-		});
-		expect(metadata).toContainEqual({
-			tagName: 'link',
-			rel: 'canonical',
-			href: `https://slugify.me${page.path}`,
-		});
-		expect(metadata).toContainEqual({
-			property: 'og:title',
-			content: page.title,
-		});
-		expect(metadata).toContainEqual({
-			property: 'og:url',
-			content: `https://slugify.me${page.path}`,
-		});
-		expect(metadata).toContainEqual({
-			property: 'og:image',
-			content: 'https://slugify.me/social-preview.png',
-		});
-		expect(metadata).toContainEqual({
-			name: 'twitter:card',
-			content: 'summary_large_image',
-		});
+		expect(html).toContain(`<title>${page.title}</title>`);
+		expect(html).toContain(
+			`<meta name="description" content="${page.description}"/>`,
+		);
+		expect(html).toContain(
+			`<link rel="canonical" href="${canonicalUrl}"/>`,
+		);
+		expect(html).toContain(
+			`<meta property="og:title" content="${page.title}"/>`,
+		);
+		expect(html).toContain(
+			`<meta property="og:description" content="${page.description}"/>`,
+		);
+		expect(html).toContain(
+			`<meta property="og:url" content="${canonicalUrl}"/>`,
+		);
+		expect(html).toContain(
+			`<meta name="twitter:title" content="${page.title}"/>`,
+		);
+		expect(html).toContain(
+			`<meta name="twitter:description" content="${page.description}"/>`,
+		);
+	});
+
+	it('keeps the FAQ heading hierarchy sequential', () => {
+		const html = renderSite(createSiteRouter('/faq'));
+
+		expect(html).toContain(
+			'<h2 id="questions-heading" class="sr-only">Questions and answers</h2>',
+		);
+		expect(html.indexOf('<h1')).toBeLessThan(html.indexOf('<h2'));
+		expect(html.indexOf('<h2')).toBeLessThan(html.indexOf('<h3'));
 	});
 
 	it('keeps the labelled generator and live output on the home route', () => {

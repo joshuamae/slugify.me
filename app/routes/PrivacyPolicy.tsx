@@ -1,7 +1,6 @@
 import type { ComponentProps, ReactNode } from 'react';
 import { Link } from 'react-router';
 
-import type { Route } from './+types/PrivacyPolicy';
 import {
 	Card,
 	CardContent,
@@ -10,7 +9,11 @@ import {
 	CardTitle,
 } from '~/components/ui/card';
 import { Separator } from '~/components/ui/separator';
-import { createPageMetadata } from '~/lib/siteMetadata';
+
+const pageTitle = 'Privacy Policy | slugify.me';
+const pageDescription =
+	'Read the slugify.me privacy policy and learn how personal information is collected, processed, retained, and protected';
+const canonicalUrl = 'https://slugify.me/privacy-policy';
 
 const dataSubjectAccessRequestUrl =
 	'https://app.termly.io/dsar/def1acb5-162c-4db9-9154-7e83d330b36a';
@@ -119,15 +122,6 @@ const personalInformationCategories = [
 		collected: 'No',
 	},
 ];
-
-export function meta(_args: Route.MetaArgs) {
-	return createPageMetadata({
-		title: 'Privacy Policy | slugify.me',
-		description:
-			'Read the slugify.me privacy policy and learn how personal information is collected, processed, retained, and protected',
-		pathname: '/privacy-policy',
-	});
-}
 
 function PolicyLink({ href, children, ...props }: ComponentProps<'a'>) {
 	const opensInNewTab = href?.startsWith('http');
@@ -266,6 +260,15 @@ function ShortSummary({ children }: { children: ReactNode }) {
 export default function PrivacyPolicy() {
 	return (
 		<main className="flex flex-1 px-4 py-10 sm:px-6 sm:py-18">
+			<title>{pageTitle}</title>
+			<meta name="description" content={pageDescription} />
+			<link rel="canonical" href={canonicalUrl} />
+			<meta property="og:title" content={pageTitle} />
+			<meta property="og:description" content={pageDescription} />
+			<meta property="og:url" content={canonicalUrl} />
+			<meta name="twitter:title" content={pageTitle} />
+			<meta name="twitter:description" content={pageDescription} />
+
 			<article className="mx-auto flex min-w-0 w-full max-w-3xl flex-col gap-8 text-sm leading-7 text-muted-foreground sm:text-base">
 				<Card role="region" aria-labelledby="privacy-tldr">
 					<CardHeader>
@@ -304,12 +307,13 @@ export default function PrivacyPolicy() {
 				<div className="flex flex-col gap-4">
 					<p>
 						This Privacy Notice for Slugify.me (&quot;
-						<strong className="text-foreground">we</strong>,&quot;
-						&quot;<strong className="text-foreground">us</strong>
+						<strong className="text-foreground">we</strong>
+						,&quot; &quot;
+						<strong className="text-foreground">us</strong>
 						,&quot; or &quot;
-						<strong className="text-foreground">our</strong>&quot;),
-						describes how and why we might access, collect, store,
-						use, and/or share (&quot;
+						<strong className="text-foreground">our</strong>
+						&quot;), describes how and why we might access, collect,
+						store, use, and/or share (&quot;
 						<strong className="text-foreground">process</strong>
 						&quot;) your personal information when you use our
 						services (&quot;

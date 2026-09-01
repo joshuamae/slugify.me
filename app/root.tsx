@@ -1,7 +1,6 @@
 import {
 	isRouteErrorResponse,
 	Links,
-	Meta,
 	Outlet,
 	Scripts,
 	ScrollRestoration,
@@ -11,6 +10,10 @@ import type { Route } from './+types/root';
 import './app.css';
 import SiteHeader from '~/components/layouts/SiteHeader';
 import SiteFooter from '~/components/layouts/SiteFooter';
+
+const socialPreviewUrl = 'https://slugify.me/social-preview.png';
+const socialPreviewAlt =
+	'slugify.me logo beside the text “Clean URL slugs, instantly”';
 
 export const links: Route.LinksFunction = () => [
 	{
@@ -34,14 +37,24 @@ export const links: Route.LinksFunction = () => [
 
 export function Layout({ children }: { children: React.ReactNode }) {
 	return (
-		<html lang="en">
+		<html lang="en" prefix="og: https://ogp.me/ns#">
 			<head>
 				<meta charSet="utf-8" />
 				<meta
 					name="viewport"
 					content="width=device-width, initial-scale=1"
 				/>
-				<Meta />
+				<meta property="og:type" content="website" />
+				<meta property="og:site_name" content="slugify.me" />
+				<meta property="og:locale" content="en_US" />
+				<meta property="og:image" content={socialPreviewUrl} />
+				<meta property="og:image:type" content="image/png" />
+				<meta property="og:image:width" content="1200" />
+				<meta property="og:image:height" content="630" />
+				<meta property="og:image:alt" content={socialPreviewAlt} />
+				<meta name="twitter:card" content="summary_large_image" />
+				<meta name="twitter:image" content={socialPreviewUrl} />
+				<meta name="twitter:image:alt" content={socialPreviewAlt} />
 				<Links />
 			</head>
 			<body>
