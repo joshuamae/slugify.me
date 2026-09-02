@@ -72,10 +72,29 @@ Generated slugs follow these rules:
 - Text is converted to lowercase
 - Unicode text is normalized and combining diacritic marks are removed (`Crème brûlée` becomes `creme-brulee`)
 - Unicode letters and numbers are preserved (`東京 2026` becomes `東京-2026`)
+- Reviewed exception mappings are applied once after normalization and lowercasing with Unicode-aware, case-insensitive matching; replacement text is not matched again during the same pass
+- Term-mode exceptions use Unicode letter-and-number boundaries, so they match at string boundaries and beside punctuation or symbols, but not inside a larger letter-or-number token
+- Literal-mode exceptions are reserved for reviewed cases that intentionally match inside larger tokens; no current production mapping uses literal mode
+- `C++` maps to `cpp` and `C#` maps to `c-sharp` before other symbol contexts are considered
+- Every printable ASCII punctuation key has deterministic behavior: a reviewed spoken context or an intentional silent fallback
+- Strong numeric contexts are spoken: `#1` becomes `number-1`, `$25` becomes `25-dollars`, `-$5` becomes `negative-5-dollars`, `50%` becomes `50-percent`, `12.5` becomes `12-point-5`, and a rating such as `5*` becomes `5-stars`
+- Well-formed numeric comma groups are joined, multi-part numeric dots use `dot`, and one numeric dot uses `point`: `1,234` becomes `1234` and `127.0.0.1` becomes `127-dot-0-dot-0-dot-1`
+- Binary operators require clear same-line operands and normally matching horizontal spacing on both sides: `1+1=2` becomes `1-plus-1-equals-2`, `x >= 5` becomes `x-greater-than-or-equal-to-5`, and `a&&b` becomes `a-and-b`
+- An explicit signed numeric or dollar right operand accepts common compact and padded variations, so `2==-5`, `2 == -5`, `2== -5`, and `2 ==-$5` retain the operator and speak the sign
+- An unpaired single postfix `*` names the A-star term or a numeric rating when it is not part of a clear operator: `A* algorithm` becomes `a-star-algorithm`, `5*` becomes `5-stars`, and `1*` becomes `1-star`
+- Recognized same-line paired single-star emphasis markers that do not overlap a clear operator remain silent, so `*rated 5*` becomes `rated-5`; double and repeated decorative stars also remain silent
+- Postfix-star attachment is intentional: `rated 5* today` uses rating notation, `5*2` and `5 * 2` are multiplication, an attached signed operand such as `5* -2` remains multiplication, and the half-spaced numeric form `5* 2` falls back silently as ambiguous
+- Compact `/` is division only between numbers, padded `/` supports other operands, padded `-` is subtraction, compact `-` remains a slug separator, numeric `%` between operands is modulo, and numeric `^` is exponentiation
+- Reviewed compound forms include equality and comparison operators, logical `&&` and `||`, exponentiation `**`, and their common assignment variants; longer operators such as `===`, `!==`, `**=`, and `<=` take precedence over prefixes
+- Exact `++` remaining after protected terms are resolved means `increment` when only one side is an operand, while two-sided and otherwise ambiguous plus runs fall back silently
+- Unary signs, numeric approximation, logical negation in expression position, and numeric factorials are spoken only in bounded contexts
+- Line breaks reset expression context, preventing binary operators from joining unrelated lines while allowing prefix notation to start a new line
+- Text connectors and email addresses are recognized in context: `rock & roll` becomes `rock-and-roll` and `user@example.com` becomes `user-at-example-dot-com`
+- Only the common `M/D/YYYY` and `YYYY/M/D` slash shapes are protected as dates; `9/2/2026` becomes `9-2-2026`, while `1/2/3` is treated as chained division
+- Recognized HTTP, HTTPS, FTP, and `www` URL-like spans and HTML-like tags keep their symbols structural rather than speaking them as operators
 - Apostrophes and quotation marks are removed without splitting words (`don't` becomes `dont`)
-- Each run of whitespace, remaining punctuation, symbols, separators, or emoji becomes a single hyphen (`-`)
+- Ordinary sentence punctuation, periods outside numeric or email contexts, structural delimiters, unsupported compound operators, ambiguous symbols, whitespace, and emoji fall back to a single hyphen (`-`); `Hello, world!` remains `hello-world`
 - Leading and trailing hyphens are removed. Input containing only separators produces an empty slug
-- `C++` and `C#` are handled explicitly as `cpp` and `c-sharp`
 
 ## Tech stack
 
@@ -142,7 +161,8 @@ those separately in a browser, including direct visits and refreshes on every ro
 
 ## Known limitations
 
-- Character-specific replacements currently cover only `C++` and `C#`; other symbol-heavy terms follow the general separator rules
+- Symbol interpretation is a bounded deterministic grammar, not natural-language or programming-language parsing; ambiguous, malformed, unsupported, and half-spaced forms deliberately fall back to normal separator cleanup
+- Reviewed term-level exception mappings currently cover only `C++` and `C#`; lookalikes embedded in larger Unicode letter-or-number tokens follow the general separator rules
 - The project is distributed from source; no npm package or release binaries are provided
 
 ## License

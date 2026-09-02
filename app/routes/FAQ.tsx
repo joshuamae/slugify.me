@@ -19,7 +19,7 @@ const frequentlyAskedQuestions = [
 	{
 		id: 'how-slugs-are-generated',
 		question: 'How does slugify.me generate slugs?',
-		answer: 'Text is converted to lowercase, accents are normalized, and punctuation or whitespace is replaced with hyphens. Repeated and surrounding hyphens are removed automatically.',
+		answer: 'Text is converted to lowercase, accents are normalized, and high-confidence symbol contexts are spoken. Ordinary punctuation, ambiguous symbols, and whitespace become hyphens. Repeated and surrounding hyphens are removed automatically.',
 	},
 	{
 		id: 'privacy',
@@ -34,7 +34,7 @@ const frequentlyAskedQuestions = [
 	{
 		id: 'punctuation-and-emoji',
 		question: 'How are punctuation and emoji handled?',
-		answer: 'A run of punctuation, symbols, whitespace, or emoji becomes a single hyphen. Apostrophes are removed without separating the word, so “don’t” becomes “dont.”',
+		answer: 'Symbols are spoken only when their context is clear: “#1” becomes “number-1,” “1+1=2” becomes “1-plus-1-equals-2,” “A* algorithm” becomes “a-star-algorithm,” and “5*” becomes “5-stars.” Reviewed terms such as C++ and C# are protected first. Ordinary sentence punctuation, ambiguous symbols, whitespace, and emoji fall back to clean separators, while apostrophes and quotation marks are removed without splitting words.',
 	},
 	{
 		id: 'empty-slug',
