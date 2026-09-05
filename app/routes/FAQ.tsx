@@ -34,12 +34,17 @@ const frequentlyAskedQuestions = [
 	{
 		id: 'punctuation-and-emoji',
 		question: 'How are punctuation and emoji handled?',
-		answer: 'Symbols are spoken only when their context is clear: “#1” becomes “number-1,” “1+1=2” becomes “1-plus-1-equals-2,” “A* algorithm” becomes “a-star-algorithm,” and “5*” becomes “5-stars.” Reviewed terms such as C++ and C# are protected first. Ordinary sentence punctuation, ambiguous symbols, whitespace, and emoji fall back to clean separators, while apostrophes and quotation marks are removed without splitting words.',
+		answer: 'Clear symbol contexts retain their meaning: “#1” becomes “number-1,” “F#” becomes “f-sharp,” “B♭ minor” becomes “b-flat-minor,” and “1½ cups” becomes “1-and-one-half-cups.” Arithmetic such as “1+1=2” becomes “1-plus-1-equals-2,” while prose such as “input / output” becomes “input-output.” Reviewed names, musical notes, grades, blood types, and some other English expressions have specific rules. Unsupported or ambiguous notation, ordinary punctuation, whitespace, and emoji use the general separator rules. Apostrophes and quotation marks are removed without splitting words.',
+	},
+	{
+		id: 'math-and-code',
+		question: 'Does it preserve mathematical and programming notation?',
+		answer: 'Yes. Roots, powers, subscripts, primes, sets, logic, integrals, arrows, and many specialist symbols have English readings. For example, “√2” becomes “square-root-2,” “x²” becomes “x-to-the-power-of-2,” and “x∉S” becomes “x-not-an-element-of-s.” Code notation includes shifts, nullish coalescing, optional chaining, generic types, and ternaries: “a??b” becomes “a-nullish-coalescing-b.” This is a text formatter, not an expression evaluator or a parser for every programming language or LaTeX command. Ambiguous forms use the documented fallback rules.',
 	},
 	{
 		id: 'empty-slug',
 		question: 'Why did the generator return an empty slug?',
-		answer: 'Input containing only punctuation, emoji, whitespace, or other separators has no letters or numbers to preserve, so the result is empty.',
+		answer: 'Input containing only whitespace, emoji, or punctuation without a recognized meaning produces an empty slug. Recognized mathematical symbols can produce words by themselves: “∞” becomes “infinity.”',
 	},
 	{
 		id: 'unique-slugs',
