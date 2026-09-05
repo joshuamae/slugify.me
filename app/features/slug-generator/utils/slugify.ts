@@ -1,37 +1,30 @@
-const charReplacements = new Map<string, string>([
-	['c++', 'cpp'],
-	['c#', 'c-sharp'],
-]);
+import { preserveGenericTypes } from './slugify/code-notation';
+import { preserveUnicodeMeaning } from './slugify/english-notation';
+import { applyExceptionMappings } from './slugify/exceptions';
+import { preserveMathNotation } from './slugify/math-notation';
+import { finalizeSlug } from './slugify/normalization';
+import { escapeOperandMarkers } from './slugify/operand-markers';
+import { applyContextualSymbolMappings } from './slugify/operators';
+import { applyStructuredSymbolContexts } from './slugify/structured-notation';
+
+export { createExceptionMappingApplier } from './slugify/exceptions';
+export type {
+	ExceptionMapping,
+	ExceptionMatchMode,
+} from './slugify/data/reviewed-terms';
 
 /**
- * Slugs a given string using the below steps:
- *
- * @param input - The text to convert
- * @returns The generated slug
- *
- * @example
- * slugify("Learn C++ Today!")
- * // Returns "learn-cpp-today"
+ * Converts text to a lowercase, hyphen-separated slug.
  */
 export function slugify(input: string): string {
-	// Normalize, accent deletion, and lowercase
-	let slug = input
-		.normalize('NFKD')
-		.replace(/\p{M}+/gu, '')
-		.toLowerCase();
-
-	// Special cases
-	for (const [match, replacement] of charReplacements) {
-		slug = slug.replaceAll(match, replacement);
-	}
-
-	return (
-		slug
-			// Keep words joined when quotes appear within them: "don't" becomes "dont"
-			.replace(/['’‘"“”`]/g, '')
-			// Convert spaces, punctuation, symbols, and unmapped emojis into single dashes
-			.replace(/[^\p{L}\p{N}]+/gu, '-')
-			// Prevent the completed slug from starting or ending with a dash
-			.replace(/^-+|-+$/g, '')
-	);
+	// Reserve internal operand markers so pasted control characters cannot forge context.
+	const escaped = escapeOperandMarkers(input);
+	// Preserve notation before exception matching performs compatibility normalization.
+	const generics = preserveGenericTypes(escaped);
+	const math = preserveMathNotation(generics);
+	const unicode = preserveUnicodeMeaning(math);
+	const terms = applyExceptionMappings(unicode);
+	// Resolve protected spans and numeric operands before interpreting operators.
+	const structured = applyStructuredSymbolContexts(terms);
+	return finalizeSlug(applyContextualSymbolMappings(structured));
 }

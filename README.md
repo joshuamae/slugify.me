@@ -72,10 +72,60 @@ Generated slugs follow these rules:
 - Text is converted to lowercase
 - Unicode text is normalized and combining diacritic marks are removed (`Crème brûlée` becomes `creme-brulee`)
 - Unicode letters and numbers are preserved (`東京 2026` becomes `東京-2026`)
-- Apostrophes and quotation marks are removed without splitting words (`don't` becomes `dont`)
-- Each run of whitespace, remaining punctuation, symbols, separators, or emoji becomes a single hyphen (`-`)
+- Reviewed exception mappings are applied once after normalization and lowercasing with Unicode-aware, case-insensitive matching; replacement text is not matched again during the same pass
+- Term-mode exceptions use Unicode letter-and-number boundaries, so they match at string boundaries and beside punctuation or symbols, but not inside a larger letter-or-number token
+- Literal-mode exceptions are reserved for reviewed cases that intentionally match inside larger tokens; no current production mapping uses literal mode
+- Reviewed names retain meaningful symbols: `C++` becomes `cpp`, `C#` becomes `c-sharp`, `F#` becomes `f-sharp`, `.NET` becomes `dot-net`, and `Notepad++` becomes `notepad-plus-plus`
+- Additional reviewed names include C++ editions 98, 03, 11, 14, 17, 20, 23, and 26; g++, clang++, libstdc++, libc++, GTK+, LGBT+, LGBTQ+, LGBTQIA+, Disney+, Paramount+, and Apple TV+
+- Specialist terms preserve their distinguishing symbols: `D* Lite`, `D* algorithm`, `IDA*`, `LPA*`, `RRT*`, C*/W*/B* algebras, and B+/B* trees; algebra and tree names accept singular/plural nouns and a space or hyphen
+- Musical note letters A–G retain Unicode sharps, flats, naturals, double sharps, double flats, and optional octave numbers; `B♭ minor` becomes `b-flat-minor` and `F𝄪4` becomes `f-double-sharp-4`
+- ASCII sharp notes also match before musical words such as major, minor, scale, and chord; grades and blood types require a nearby context word, so `A+ student` becomes `a-plus-student`, `grade B−` becomes `grade-b-minus`, and `blood type O-` becomes `blood-type-o-negative`
+- A single trailing plus on an unsigned integer is retained at the end of input or before a full word: `18+` becomes `18-plus` and `30+ recipes` becomes `30-plus-recipes`
+- Every printable ASCII punctuation key has deterministic behavior: a reviewed spoken context or an intentional silent fallback
+- Strong numeric contexts are spoken: `#1` becomes `number-1`, `$25` becomes `25-dollars`, `-$5` becomes `negative-5-dollars`, `50%` becomes `50-percent`, `12.5` becomes `12-point-5`, and a rating such as `5*` becomes `5-stars`
+- Amounts with 27 additional currency signs retain their units and signs, including `€5`, `£1`, `50¢`, `¥10`, and `₹10`; `-€5.25` becomes `negative-5-point-25-euros`, compact expressions such as `2+€5` become `2-plus-5-euros`, and no country or exchange rate is inferred
+- Per-mille, per-ten-thousand, and degree suffixes retain their meaning: `50‰` becomes `50-per-mille`, `2‱` becomes `2-per-ten-thousand`, and `30°` becomes `30-degrees`
+- Well-formed numeric comma groups are joined, multi-part numeric dots use `dot`, and one numeric dot uses `point`: `1,234` becomes `1234` and `127.0.0.1` becomes `127-dot-0-dot-0-dot-1`
+- Binary operators require clear same-line operands and normally matching horizontal spacing on both sides: `1+1=2` becomes `1-plus-1-equals-2`, `x >= 5` becomes `x-greater-than-or-equal-to-5`, and `a&&b` becomes `a-and-b`
+- An explicit signed numeric or dollar right operand accepts common compact and padded variations, so `2==-5`, `2 == -5`, `2== -5`, and `2 ==-$5` retain the operator and speak the sign
+- An unpaired single postfix `*` names the A-star term or a numeric rating when it is not part of a clear operator: `A* algorithm` becomes `a-star-algorithm`, `5*` becomes `5-stars`, and `1*` becomes `1-star`
+- Recognized same-line paired single-star emphasis markers that do not overlap a clear operator remain silent, so `*rated 5*` becomes `rated-5`; double and repeated decorative stars also remain silent
+- Postfix-star attachment is intentional: `rated 5* today` uses rating notation, `5*2` and `5 * 2` are multiplication, an attached signed operand such as `5* -2` remains multiplication, and the half-spaced numeric form `5* 2` falls back silently as ambiguous
+- Compact `/` is division only between numbers; spaced `/` and `-` support numeric expressions and single-letter algebra, while words with multiple Unicode letters indicate prose separators (`input / output` becomes `input-output`, `Hello - world` becomes `hello-world`, and `αβ / γδ` becomes `αβ-γδ`)
+- Compact `-` remains a slug separator, numeric `%` between operands is modulo, and numeric `^` is exponentiation
+- Reviewed slash phrases retain their prose meaning beside context words: `24/7 support`, `open 24/7`, `9/11 memorial`, and `4/4 time` become `24-7-support`, `open-24-7`, `9-11-memorial`, and `4-4-time`; bare `24/7` remains division
+- Unicode vulgar fractions retain their value and numeric operand context before normalization, including mixed quantities: `½ cup` becomes `one-half-cup`, `1½ cups` becomes `1-and-one-half-cups`, and `2*½` becomes `2-times-one-half`
+- Unicode fraction slashes retain their ratio; ASCII fractions and leading-dot decimals are recognized before common cooking, length, and time units (`1 1/2 cups` becomes `1-and-one-half-cups`, `5/16-inch` becomes `5-over-16-inch`, and `.5 cup` becomes `0-point-5-cup`), while bare `1/2` remains division
+- Celsius and Fahrenheit degree suffixes are spoken: `20°C` and `20℃` both become `20-degrees-celsius`
+- Unicode arithmetic signs `×`, `÷`, `−`, `≤`, `≥`, and `±` retain their meaning in expressions; negated comparisons are protected before accent removal, so both `x ≠ y` and its decomposed spelling become `x-not-equals-y`
+- Mathematical symbols and arrows have explicit English readings across the Mathematical Operators, Supplemental Mathematical Operators, Miscellaneous Mathematical Symbols A/B, Arrows, Supplemental Arrows A/B/C, and reviewed APL ranges; obscure symbols use their Unicode names, including Unicode 17 reaction arrows
+- Set membership, quantifiers, logic, sums, integrals, and roots retain their distinctions: `x∉S` becomes `x-not-an-element-of-s`, `∀x∈ℝ` becomes `for-all-x-element-of-real-numbers`, and `√x/2` becomes `square-root-x-divided-by-2`
+- Superscripts and subscripts are preserved before normalization: `x²` becomes `x-to-the-power-of-2`, `xₙ` becomes `x-subscript-n`, and `log₂(x)` becomes `log-base-2-x`; numeric subscripts inside identifiers and formulas such as `H₂O` and `CO₂` retain their ordinary spelling
+- Bounded mathematical alphabet symbols name their sets, including ℕ, ℤ, ℚ, ℝ, ℂ, ℍ, and 𝔽; surrounding prose remains intact, so `ℝandom` becomes `random`
+- Unicode primes distinguish derivatives and related notation: `f″(x)` becomes `f-double-prime-x`; paired height notation such as `5′10″` becomes `5-feet-10-inches`
+- Paired floors, ceilings, and compact absolute-value or norm bars retain their names: `⌊x⌋` becomes `floor-x`, `|x|` becomes `absolute-value-x`, and `‖v‖` becomes `norm-v`; padded prose pipes remain separators
+- Bounded algebraic factorials retain their names: `n!`, `n!!`, and `(n+1)!` become `n-factorial`, `n-double-factorial`, and `n-plus-1-factorial`; ordinary exclamations such as `Amazing!` and `I!` remain prose
+- Reviewed compound forms include equality, comparison, logical and assignment operators, shifts, nullish coalescing, optional chaining, scope resolution, arrows, floor division, and numeric ranges; longer operators take precedence over prefixes, so `a>>>=b` becomes `a-unsigned-right-shift-equals-b`
+- Operator names are retained in explicit operator contexts: `?? operator` becomes `nullish-coalescing-operator` and `std::operator<<` becomes `std-scope-operator-left-shift`
+- Balanced generic types preserve type arguments: `std::vector<int>` becomes `std-scope-vector-of-int` and `Map<K, List<V>>` becomes `map-of-k-list-of-v`; ordinary comparisons and HTML retain their existing rules
+- Paired same-line ternaries retain both branches, including nesting and numeric signs: `a?b:c` becomes `a-then-b-else-c` and `a ? -5 : 5` becomes `a-then-negative-5-else-5`; unmatched questions, quoted colons, and ordinary prose do not create a conditional operator
+- Exact `++` remaining after protected terms are resolved means `increment` when only one side is an operand, while two-sided and otherwise ambiguous plus runs fall back silently
+- Attached postfix `--` denotes decrement; prefix decrement requires an expression position or a single-letter operand at the start, preserving ordinary CLI flags such as `--help`
+- Unary signs, numeric approximation, logical negation in expression position, and numeric factorials are spoken only in bounded contexts
+- Line breaks reset expression context, preventing binary operators from joining unrelated lines while allowing prefix notation to start a new line
+- Text connectors and email addresses are recognized in context: `rock & roll` becomes `rock-and-roll` and `user@example.com` becomes `user-at-example-dot-com`
+- Only the common `M/D/YYYY` and `YYYY/M/D` slash shapes are protected as dates; `9/2/2026` becomes `9-2-2026`, while `1/2/3` is treated as chained division
+- Recognized HTTP, HTTPS, FTP, and `www` URL-like spans and HTML-like tags keep their symbols structural rather than speaking them as operators
+- Apostrophes and quotation marks are removed without splitting words (`don't` becomes `dont`); modifier apostrophes and discretionary soft hyphens between Latin ASCII letters are also removed (`donʼt` becomes `dont`)
+- Ordinary sentence punctuation, periods outside numeric or email contexts, structural delimiters, unsupported compound operators, ambiguous symbols, whitespace, and emoji fall back to a single hyphen (`-`); `Hello, world!` remains `hello-world`
 - Leading and trailing hyphens are removed. Input containing only separators produces an empty slug
-- `C++` and `C#` are handled explicitly as `cpp` and `c-sharp`
+
+These rules preserve recognizable notation; they do not evaluate expressions or
+parse every programming language, LaTeX command, unit convention, or possible
+meaning of an overloaded symbol. Ordinary English words need no dictionary lookup.
+Ambiguous compact forms retain the documented fallback: `x-y` stays `x-y`,
+`1e-3` stays `1e-3`, and a bare `24/7` remains division. Slugs are deterministic and
+idempotent, but are not reversible or guaranteed unique.
 
 ## Tech stack
 
@@ -84,6 +134,32 @@ Generated slugs follow these rules:
 - TypeScript
 - Vite
 - npm
+
+## Slug engine structure
+
+The browser component calls `slugify(input: string): string` from
+`app/features/slug-generator/utils/slugify.ts`. This entry point also preserves
+the exception-mapping factory and types. Its internal modules live beside it in
+`utils/slugify/`, within the slug-generator feature:
+
+- `data/` — reviewed terms, operator mappings, and Unicode notation tables
+- `character-context.ts`, `wrappers.ts`, and the operand, postfix, and expression context modules — source inspection without rewriting
+- `exceptions.ts`, `english-notation.ts`, `math-notation.ts`, `code-notation.ts`, `currency.ts`, `numeric-notation.ts`, and `emphasis.ts` — focused recognition and conversion rules
+- `protected-spans.ts` — URL and HTML protection
+- `notation-spans.ts` — typed source ranges for numeric values and conditional boundaries, applied together against the source that was inspected
+- `structured-notation.ts` — ordered processing of protected text, notation, and numeric operands
+- `operators.ts` and `normalization.ts` — operator readings and final slug cleanup
+
+Dependencies flow from the entry point into rule modules and then into source
+inspection helpers and data. The engine has no React or browser dependencies.
+Unicode distinctions are preserved before compatibility normalization; numeric
+and conditional boundaries remain available until operator rendering. Source
+indexes are recomputed whenever a replacement stage changes the inspected text.
+
+Tests for exceptions, English notation, and mathematics live beside those
+modules and exercise the public entry points. The main conversion suite retains
+general rules, idempotence, and large-input cases; notation regression tests cover
+interactions between stages.
 
 ## Getting started
 
@@ -142,7 +218,10 @@ those separately in a browser, including direct visits and refreshes on every ro
 
 ## Known limitations
 
-- Character-specific replacements currently cover only `C++` and `C#`; other symbol-heavy terms follow the general separator rules
+- Symbol interpretation is a bounded deterministic grammar, not natural-language or programming-language parsing; ambiguous, malformed, unsupported, and half-spaced forms deliberately fall back to normal separator cleanup
+- Reviewed term-level exceptions cover the names listed above; lookalikes embedded in larger Unicode letter-or-number tokens follow the general separator rules, so `.NET` becomes `dot-net` while `ASP.NET` remains `asp-net`
+- English notation is recognized through explicit terms and nearby context words, not a dictionary or language model; unsupported names, currencies, units, fraction contexts, and ambiguous suffixes retain the general fallback behavior
+- Accented English words and loanwords normalize without a vocabulary lookup, while distinct Unicode letters such as `æ` and `œ` are preserved rather than broadly transliterated
 - The project is distributed from source; no npm package or release binaries are provided
 
 ## License
