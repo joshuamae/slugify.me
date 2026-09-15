@@ -1,12 +1,15 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
 	fileMetadata,
+	findGnuTar,
 	nextState,
 	packageRelease,
 	parseOptions,
+	prune,
 	retentionPlan,
 	safePath,
 	sha256,
@@ -19,6 +22,7 @@ import {
 const temporaryDirectories = [];
 const commit = 'a'.repeat(40);
 const releaseId = `${commit.slice(0, 12)}-123-1`;
+const createdAt = '2026-09-15T12:00:00.000Z';
 
 it('parses checksum options and refuses misspelled, duplicate or misplaced flags', () => {
 	expect(
@@ -36,6 +40,7 @@ it('parses checksum options and refuses misspelled, duplicate or misplaced flags
 	).toThrow();
 });
 
+/** Create an isolated build tree with deployable files and excluded local metadata. */
 function fixture() {
 	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'release-test-'));
 	temporaryDirectories.push(root);
@@ -61,6 +66,7 @@ function fixture() {
 	return { source, destination };
 }
 
+/** Simulate S3 state revisions so locking tests detect stale conditional writes. */
 function memoryStore(value) {
 	let state = structuredClone(value);
 	let revision = 1;
@@ -86,9 +92,112 @@ afterEach(() => {
 });
 
 describe('release package integrity', () => {
+	it('requires supported GNU tar and reports a clear missing-toolchain error', () => {
+		expect(
+			findGnuTar((program) =>
+				program === 'gtar' ? 'tar (GNU tar) 1.35' : 'bsdtar 3.5',
+			),
+		).toBe('gtar');
+		expect(
+			findGnuTar((program) =>
+				program === 'gtar' ? 'bsdtar 3.5' : 'tar (GNU tar) 1.28',
+			),
+		).toBe('tar');
+		expect(() => findGnuTar(() => 'tar (GNU tar) 1.27')).toThrow(
+			'GNU tar 1.28',
+		);
+		expect(() => findGnuTar(() => 'bsdtar 3.5')).toThrow('GNU tar 1.28');
+		expect(() =>
+			findGnuTar(() => {
+				throw new Error('ENOENT');
+			}),
+		).toThrow('brew install gnu-tar');
+	});
+
+	it('produces identical archives and manifests despite changed mtimes, permissions and creation order', () => {
+		const first = fixture();
+		const second = fixture();
+		const files = ['robots.txt', 'sitemap.xml', 'index.html'];
+		for (const file of files.reverse()) {
+			const filename = path.join(second.source, file);
+			const contents = fs.readFileSync(filename);
+			fs.unlinkSync(filename);
+			fs.writeFileSync(filename, contents, { mode: 0o700 });
+			fs.utimesSync(
+				filename,
+				new Date('2001-01-01'),
+				new Date('2001-01-01'),
+			);
+		}
+		packageRelease(
+			first.source,
+			first.destination,
+			releaseId,
+			commit,
+			createdAt,
+		);
+		packageRelease(
+			second.source,
+			second.destination,
+			releaseId,
+			commit,
+			createdAt,
+		);
+		for (const file of ['site.tar.gz', 'manifest.json', 'SHA256SUMS']) {
+			expect(fs.readFileSync(path.join(first.destination, file))).toEqual(
+				fs.readFileSync(path.join(second.destination, file)),
+			);
+		}
+		const manifest = JSON.parse(
+			fs.readFileSync(
+				path.join(first.destination, 'manifest.json'),
+				'utf8',
+			),
+		);
+		expect(manifest.createdAt).toBe(createdAt);
+		fs.writeFileSync(
+			path.join(second.source, 'index.html'),
+			'Changed content',
+		);
+		packageRelease(
+			second.source,
+			second.destination,
+			releaseId,
+			commit,
+			createdAt,
+		);
+		expect(
+			fs.readFileSync(path.join(first.destination, 'site.tar.gz')),
+		).not.toEqual(
+			fs.readFileSync(path.join(second.destination, 'site.tar.gz')),
+		);
+	});
+
+	it('rejects an absent or ambiguous creation time before writing the package', () => {
+		const { source, destination } = fixture();
+		for (const timestamp of [undefined, 'invalid', '2026-09-15T12:00:00']) {
+			expect(() =>
+				packageRelease(
+					source,
+					destination,
+					releaseId,
+					commit,
+					timestamp,
+				),
+			).toThrow();
+			expect(fs.existsSync(destination)).toBe(false);
+		}
+	});
+
 	it('records the full commit, archive hash, every deployable file and explicit metadata', () => {
 		const { source, destination } = fixture();
-		const manifest = packageRelease(source, destination, releaseId, commit);
+		const manifest = packageRelease(
+			source,
+			destination,
+			releaseId,
+			commit,
+			createdAt,
+		);
 		expect(manifest.files).toHaveLength(7);
 		expect(
 			manifest.files.some((file) => file.path.startsWith('.vite/')),
@@ -106,7 +215,13 @@ describe('release package integrity', () => {
 
 	it('rejects duplicate files, incomplete pages, wrong commit identity and altered metadata', () => {
 		const { source, destination } = fixture();
-		const manifest = packageRelease(source, destination, releaseId, commit);
+		const manifest = packageRelease(
+			source,
+			destination,
+			releaseId,
+			commit,
+			createdAt,
+		);
 		const duplicate = structuredClone(manifest);
 		duplicate.files.push(duplicate.files[0]);
 		expect(() => validateManifest(duplicate)).toThrow();
@@ -134,7 +249,7 @@ describe('release package integrity', () => {
 			path.join(source, 'link.html'),
 		);
 		expect(() =>
-			packageRelease(source, destination, releaseId, commit),
+			packageRelease(source, destination, releaseId, commit, createdAt),
 		).toThrow(/Symlink/);
 	});
 
@@ -329,6 +444,38 @@ describe('release state and operation serialization', () => {
 });
 
 describe('retention safeguards', () => {
+	it('reports requested apply mode when no archives are eligible without attempting deletion', () => {
+		const calls = [];
+		const store = {
+			aws(args) {
+				calls.push(args);
+				return {};
+			},
+			getState: () => ({
+				value: {
+					active: { releaseId: 'current' },
+					previous: null,
+					pending: null,
+				},
+			}),
+		};
+		for (const apply of [false, true]) {
+			const result = prune({ bucket: 'test-bucket' }, store, apply);
+			expect(result.dryRun).toBe(!apply);
+			expect(result.candidates).toEqual([]);
+			expect(result.preserved).toContain('active');
+		}
+		expect(calls).toEqual(
+			Array(2).fill([
+				's3api',
+				'list-objects-v2',
+				'--bucket',
+				'test-bucket',
+				'--prefix',
+				'releases/v1/',
+			]),
+		);
+	});
 	const now = Date.parse('2026-09-15T12:00:00Z');
 	const manifests = Array.from({ length: 15 }, (_, index) => ({
 		releaseId: `release-${index}`,
@@ -376,5 +523,64 @@ describe('retention safeguards', () => {
 				now,
 			),
 		).toThrow();
+	});
+});
+
+describe('workflow output integrity', () => {
+	it('writes both hashes only after successful extraction and validation', () => {
+		const workflow = fs.readFileSync(
+			new URL(
+				'../.github/workflows/deploy-staging.yaml',
+				import.meta.url,
+			),
+			'utf8',
+		);
+		const start = workflow.indexOf('          archive_sha256=');
+		const end = workflow.indexOf("          printf 'release-id=", start);
+		expect(start).toBeGreaterThan(0);
+		expect(end).toBeGreaterThan(start);
+		const script = workflow.slice(start, end);
+		const { destination } = fixture();
+		fs.mkdirSync(destination);
+		const output = path.join(destination, 'outputs');
+		for (const contents of [
+			'{',
+			'{}',
+			JSON.stringify({ archiveSha256: 'a'.repeat(64) }),
+			JSON.stringify({
+				archiveSha256: 'invalid',
+				manifestSha256: 'b'.repeat(64),
+			}),
+			JSON.stringify({
+				archiveSha256: 'a'.repeat(64),
+				manifestSha256: 'b'.repeat(64),
+			}),
+		]) {
+			fs.writeFileSync(
+				path.join(destination, 'release-info.json'),
+				contents,
+			);
+			fs.writeFileSync(output, '');
+			const result = spawnSync('bash', ['-c', script], {
+				encoding: 'utf8',
+				env: {
+					...process.env,
+					RUNNER_TEMP: destination,
+					GITHUB_OUTPUT: output,
+				},
+			});
+			if (
+				contents.includes('"manifestSha256":"' + 'b'.repeat(64)) &&
+				contents.includes('"archiveSha256":"' + 'a'.repeat(64))
+			) {
+				expect(result.status, result.stderr).toBe(0);
+				expect(fs.readFileSync(output, 'utf8')).toBe(
+					`archive-sha256=${'a'.repeat(64)}\nmanifest-sha256=${'b'.repeat(64)}\n`,
+				);
+			} else {
+				expect(result.status).not.toBe(0);
+				expect(fs.readFileSync(output, 'utf8')).toBe('');
+			}
+		}
 	});
 });
