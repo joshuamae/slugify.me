@@ -183,8 +183,20 @@ Run commands from the repository root in Bash or Zsh. You need:
 - GitHub CLI (`gh`) installed and signed in with access to the repository's OIDC settings
 - AWS permissions to create the S3, CloudFront, and IAM resources in the template
 - Node.js 24 and npm for building the website
-- `curl`, `tar`, and `shasum` available in the terminal
+- `curl`, `gzip`, and `shasum` available in the terminal
+- GNU tar 1.28 or newer for packaging and tests; the tool checks `gtar` first, then `tar`
 - Your GitHub repository name in `OWNER/REPOSITORY` format
+
+On macOS, install GNU tar with Homebrew. The built-in BSD tar does not support
+the required archive normalization options:
+
+```sh
+brew install gnu-tar
+gtar --version
+```
+
+Ubuntu GitHub runners provide GNU tar. Rollback and verification only extract
+existing archives and can use the system `tar`; they do not require GNU tar.
 
 Confirm AWS access:
 
@@ -412,12 +424,14 @@ clear visitors' browser caches.
   export CLOUDFRONT_DISTRIBUTION_ID="$(stack_output DistributionId)"
   export SITE_URL="$(stack_output SiteUrl)"
   SITE_RELEASE_ID="$(git rev-parse --short=12 HEAD)-$(date -u +%Y%m%dT%H%M%SZ)"
+  SITE_RELEASE_CREATED_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   SITE_RELEASE_DIR="$(mktemp -d)"
   trap 'rm -rf -- "$SITE_RELEASE_DIR"' EXIT
 
   node scripts/site-release.mjs package \
     --source build/client --directory "$SITE_RELEASE_DIR" \
     --release-id "$SITE_RELEASE_ID" --commit-sha "$(git rev-parse HEAD)" \
+    --created-at "$SITE_RELEASE_CREATED_AT" \
     --output "$SITE_RELEASE_DIR/info.json"
 
   SITE_MANIFEST_SHA256="$(node -p \
@@ -785,9 +799,25 @@ archive without rebuilding it.
 ### Manage releases and application rollback
 
 `scripts/site-release.mjs` uses Node.js built-ins and invokes the installed AWS
-CLI, `tar`, and `curl`. It adds no runtime or build dependency to the application.
+CLI, `tar`, and `curl`. Packaging additionally requires GNU tar 1.28+ and `gzip`.
+It adds no npm dependency to the application.
 Deployment and rollback use the same upload order, metadata, invalidation, and
 verification code.
+
+Packaging normalizes archive ordering, timestamps, ownership, permissions, and
+gzip headers using [GNU tar's reproducibility guidance](https://www.gnu.org/software/tar/manual/html_node/Reproducibility.html).
+Supply `--created-at` as a UTC ISO timestamp when the release identity is first
+created. Reuse that timestamp, release ID, commit SHA, and identical built files
+when repackaging the same release; the archive, manifest, and checksum file will
+match byte for byte with the same GNU tar/gzip toolchain. Prefer retrying with the
+original three packaged files. Normalization does not make two independent app
+builds identical or allow replacing an existing archive with changed contents.
+
+Both build and publishing workflows pin external actions to verified commit SHAs,
+following [GitHub's action-pinning guidance](https://docs.github.com/en/actions/reference/security/secure-use).
+Review upstream changes before updating these pins; the version comments identify
+their release series. The package step rejects extraction failures, missing
+hashes, and invalid SHA-256 values before writing any workflow outputs.
 
 #### Release records and integrity
 
@@ -994,6 +1024,9 @@ initialized. Review the candidates, then explicitly apply a fresh plan:
 ```sh
 node scripts/site-release.mjs prune --apply
 ```
+
+The result reports `dryRun: false` for `--apply`, including when there are no
+eligible archives; plan-only runs report `dryRun: true`.
 
 Cleanup locks release operations, rechecks active/previous protection, and deletes
 all S3 versions and delete markers only within eligible `releases/v1/RELEASE_ID/`

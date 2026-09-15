@@ -19,9 +19,11 @@ const pages = {
 	'/privacy-policy': 'privacy-policy/index.html',
 };
 
+/** Return the lowercase SHA-256 digest used to compare artifact and file bytes. */
 export const sha256 = (value) =>
 	createHash('sha256').update(value).digest('hex');
 
+/** Run a tool without a shell and throw on launch failure or nonzero exit. */
 function command(program, args, options = {}) {
 	const result = spawnSync(program, args, {
 		encoding: 'utf8',
@@ -36,6 +38,7 @@ function command(program, args, options = {}) {
 	return result.stdout;
 }
 
+/** Run synchronous work in an isolated directory and remove it even on failure. */
 function temporary(callback) {
 	const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'site-release-'));
 	try {
@@ -45,6 +48,7 @@ function temporary(callback) {
 	}
 }
 
+/** Reject absolute paths, traversal and unsupported characters before filesystem or S3 use. */
 export function safePath(value) {
 	assert.equal(typeof value, 'string');
 	assert.match(value, /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/);
@@ -52,6 +56,7 @@ export function safePath(value) {
 	return value;
 }
 
+/** Assign explicit MIME/cache metadata and require fingerprinted names under assets/. */
 export function fileMetadata(filename) {
 	safePath(filename);
 	const types = {
@@ -77,6 +82,7 @@ export function fileMetadata(filename) {
 	return { contentType, cacheControl: hashed ? immutable : fresh };
 }
 
+/** List deployable regular files in order; reject links and omit local build metadata. */
 function listFiles(directory, parent = '') {
 	return fs
 		.readdirSync(directory, { withFileTypes: true })
@@ -94,6 +100,7 @@ function listFiles(directory, parent = '') {
 		.sort();
 }
 
+/** Validate release identity, complete routes, unique safe paths and expected HTTP metadata. */
 export function validateManifest(manifest) {
 	assert.equal(manifest.schemaVersion, 1);
 	assert.match(manifest.releaseId, releasePattern);
@@ -131,6 +138,7 @@ export function validateManifest(manifest) {
 	return manifest;
 }
 
+/** Hash files from the packaged snapshot and bind them to the release identity and creation time. */
 function createManifest(directory, releaseId, commitSha, archive, createdAt) {
 	return validateManifest({
 		schemaVersion: 1,
@@ -150,6 +158,7 @@ function createManifest(directory, releaseId, commitSha, archive, createdAt) {
 	});
 }
 
+/** Write the manifest and the exact archive-checksum line consumed during publication. */
 function saveManifest(manifest, directory) {
 	fs.writeFileSync(
 		path.join(directory, 'manifest.json'),
@@ -161,10 +170,58 @@ function saveManifest(manifest, directory) {
 	);
 }
 
-export function packageRelease(source, destination, releaseId, commitSha) {
+/** Select GNU tar 1.28+ before creating files; macOS installations use gtar. */
+export function findGnuTar(run = command) {
+	for (const program of ['gtar', 'tar']) {
+		let version;
+		try {
+			version = run(program, ['--version']);
+		} catch {
+			continue;
+		}
+		const match = version.match(/\(GNU tar\) (\d+)\.(\d+)/);
+		if (
+			match &&
+			(Number(match[1]) > 1 ||
+				(Number(match[1]) === 1 && Number(match[2]) >= 28))
+		)
+			return program;
+	}
+	throw new Error(
+		'Packaging requires GNU tar 1.28 or newer (gtar or tar on PATH); on macOS run brew install gnu-tar',
+	);
+}
+
+/** Package stable release inputs with normalized tar metadata and a caller-owned creation time. */
+export function packageRelease(
+	source,
+	destination,
+	releaseId,
+	commitSha,
+	createdAt,
+) {
+	assert.match(releaseId, releasePattern);
+	assert.match(commitSha, /^[a-f0-9]{40}$/);
+	assert.ok(releaseId.startsWith(commitSha.slice(0, 12) + '-'));
+	assert.equal(
+		typeof createdAt,
+		'string',
+		'Provide a stable --created-at timestamp',
+	);
+	assert.match(
+		createdAt,
+		/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/,
+		'Use a UTC ISO timestamp for --created-at',
+	);
+	assert.ok(
+		Number.isFinite(Date.parse(createdAt)),
+		'Invalid --created-at timestamp',
+	);
+	const timestamp = new Date(createdAt).toISOString();
+	const tar = findGnuTar();
 	fs.mkdirSync(destination, { recursive: true });
 	const archive = path.join(destination, 'site.tar.gz');
-	temporary((clean) => {
+	const manifest = temporary((clean) => {
 		for (const filename of listFiles(source)) {
 			fileMetadata(filename);
 			fs.mkdirSync(path.dirname(path.join(clean, filename)), {
@@ -174,27 +231,43 @@ export function packageRelease(source, destination, releaseId, commitSha) {
 				path.join(source, filename),
 				path.join(clean, filename),
 			);
+			fs.chmodSync(path.join(clean, filename), 0o644);
 		}
-		command('tar', [
-			'--format=ustar',
-			'-czf',
-			path.resolve(archive),
-			'-C',
-			clean,
-			'.',
-		]);
+		command(
+			tar,
+			[
+				'--format=ustar',
+				'--sort=name',
+				'--mtime=@0',
+				'--owner=0',
+				'--group=0',
+				'--numeric-owner',
+				'--mode=u=rwX,go=rX',
+				'--use-compress-program=gzip -n',
+				'-cf',
+				path.resolve(archive),
+				'-C',
+				clean,
+				'.',
+			],
+			{
+				env: {
+					...process.env,
+					LC_ALL: 'C',
+					TZ: 'UTC',
+					TAR_OPTIONS: '',
+					GZIP: '',
+					COPYFILE_DISABLE: '1',
+				},
+			},
+		);
+		return createManifest(clean, releaseId, commitSha, archive, timestamp);
 	});
-	const manifest = createManifest(
-		source,
-		releaseId,
-		commitSha,
-		archive,
-		new Date().toISOString(),
-	);
 	saveManifest(manifest, destination);
 	return manifest;
 }
 
+/** Reject unsafe archive paths and non-file/non-directory entries before extraction. */
 export function validateArchiveEntries(names, types) {
 	for (const name of names.trim().split('\n')) {
 		const normalized = name.replace(/^\.\//, '').replace(/\/$/, '');
@@ -208,6 +281,7 @@ export function validateArchiveEntries(names, types) {
 	}
 }
 
+/** Inspect archive entries before extracting them into an isolated directory. */
 function unpack(archive, directory) {
 	validateArchiveEntries(
 		command('tar', ['-tzf', archive]),
@@ -217,6 +291,7 @@ function unpack(archive, directory) {
 	command('tar', ['-xzf', archive, '-C', directory]);
 }
 
+/** Require extracted file names, sizes and checksums to match the selected manifest. */
 function verifyDirectory(directory, manifest) {
 	assert.deepEqual(
 		listFiles(directory),
@@ -229,6 +304,7 @@ function verifyDirectory(directory, manifest) {
 	}
 }
 
+/** Validate the explicitly selected environment and its AWS/public destinations. */
 function config() {
 	const cfg = {
 		bucket: process.env.S3_BUCKET,
@@ -248,6 +324,7 @@ function config() {
 	return cfg;
 }
 
+/** Create S3 helpers that require conditional writes for release records and immutable archives. */
 function storeFor(cfg, temp) {
 	const aws = (args) =>
 		JSON.parse(
@@ -364,6 +441,7 @@ function storeFor(cfg, temp) {
 	};
 }
 
+/** Advance verified state, retaining the prior active release and preserving previous on retries. */
 export function nextState(state, reference, evidence) {
 	return {
 		...state,
@@ -379,6 +457,7 @@ export function nextState(state, reference, evidence) {
 
 // A conditional state write serializes CLI and workflow operations in each bucket.
 // An interrupted process leaves a lock; taking it over requires its exact ID.
+/** Acquire a conditional state lock; record caught failures without advancing known-good releases. */
 export function withOperation(store, operation, callback, recoverOperation) {
 	const snapshot = store.getState();
 	const pending = snapshot.value.pending;
@@ -420,6 +499,7 @@ export function withOperation(store, operation, callback, recoverOperation) {
 	}
 }
 
+/** Validate checksum metadata and store the three release objects using conditional creation. */
 function archiveRelease(store, manifest, directory) {
 	assert.equal(
 		fs.readFileSync(path.join(directory, 'SHA256SUMS'), 'utf8'),
@@ -439,6 +519,7 @@ function archiveRelease(store, manifest, directory) {
 	}
 }
 
+/** Download and validate a selected archive, optionally enforcing a trusted manifest checksum. */
 function readRelease(store, releaseId, directory, expectedManifestHash) {
 	assert.match(releaseId, releasePattern);
 	fs.mkdirSync(directory, { recursive: true });
@@ -458,6 +539,7 @@ function readRelease(store, releaseId, directory, expectedManifestHash) {
 	return { manifest, site, manifestSha256: sha256(manifestBody) };
 }
 
+/** Fetch decoded HTTP bytes and final response headers with bounded network retries. */
 function request(url, directory) {
 	const headerFile = path.join(directory, 'headers');
 	const bodyFile = path.join(directory, 'body');
@@ -500,6 +582,7 @@ function request(url, directory) {
 	return { status, headers, body: fs.readFileSync(bodyFile) };
 }
 
+/** Require successful status, expected MIME/cache metadata, size and exact content digest. */
 export function verifyResponse(response, file) {
 	assert.equal(response.status, 200, file.path);
 	assert.equal(
@@ -516,6 +599,7 @@ export function verifyResponse(response, file) {
 	assert.equal(sha256(response.body), file.sha256, `${file.path}: contents`);
 }
 
+/** Verify every manifest file and public route, missing-resource errors and anonymous S3 denial. */
 function verifyPublished(cfg, manifest, directory) {
 	const results = [];
 	const checks = manifest.files.map((file) => ({
@@ -559,6 +643,7 @@ function verifyPublished(cfg, manifest, directory) {
 	return results;
 }
 
+/** Upload assets before HTML, invalidate CloudFront, verify public content, then advance state. */
 function publish(
 	cfg,
 	store,
@@ -666,6 +751,7 @@ function publish(
 	);
 }
 
+/** Select archives older than thirty days while protecting active, previous and newest ten releases. */
 export function retentionPlan(manifests, state, now = Date.now()) {
 	assert.ok(
 		state.active,
@@ -691,7 +777,8 @@ export function retentionPlan(manifests, state, now = Date.now()) {
 		.map((item) => item.releaseId);
 }
 
-function prune(cfg, store, apply) {
+/** Preview or remove eligible archive versions while holding the release operation lock. */
+export function prune(cfg, store, apply = false) {
 	const manifests = [];
 	const objects =
 		store.aws([
@@ -720,7 +807,7 @@ function prune(cfg, store, apply) {
 	const candidates = retentionPlan(manifests, snapshot.value);
 	if (!apply || candidates.length === 0)
 		return {
-			dryRun: true,
+			dryRun: !apply,
 			candidates,
 			preserved: [
 				'active',
@@ -780,6 +867,7 @@ function prune(cfg, store, apply) {
 	);
 }
 
+/** Save successful operation evidence to the requested file and GitHub step summary. */
 function summary(result, output) {
 	if (output)
 		fs.writeFileSync(output, JSON.stringify(result, null, 2) + '\n');
@@ -792,9 +880,17 @@ function summary(result, output) {
 	}
 }
 
+/** Parse an action-specific CLI allowlist and reject duplicate, missing or misplaced options. */
 export function parseOptions(action, args) {
 	const allowed = {
-		package: ['source', 'directory', 'release-id', 'commit-sha', 'output'],
+		package: [
+			'source',
+			'directory',
+			'release-id',
+			'commit-sha',
+			'created-at',
+			'output',
+		],
 		publish: [
 			'directory',
 			'release-id',
@@ -845,6 +941,7 @@ export function parseOptions(action, args) {
 	return options;
 }
 
+/** Dispatch validated CLI commands; AWS operations use an isolated temporary workspace. */
 export function main(args = process.argv.slice(2)) {
 	const action = args.shift();
 	const options = parseOptions(action, args);
@@ -858,6 +955,7 @@ export function main(args = process.argv.slice(2)) {
 			required('directory'),
 			required('release-id'),
 			required('commit-sha'),
+			required('created-at'),
 		);
 		summary(
 			{
