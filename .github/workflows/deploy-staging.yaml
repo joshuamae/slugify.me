@@ -27,6 +27,7 @@ jobs:
     outputs:
       release-id: ${{ steps.release.outputs.release-id }}
       archive-sha256: ${{ steps.release.outputs.archive-sha256 }}
+      manifest-sha256: ${{ steps.release.outputs.manifest-sha256 }}
       artifact-id: ${{ steps.artifact.outputs.artifact-id }}
 
     steps:
@@ -55,10 +56,12 @@ jobs:
         run: |
           test -s build/client/index.html
           SITE_RELEASE_ID="${GITHUB_SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          mkdir -p "$RUNNER_TEMP/release"
-          tar -czf "$RUNNER_TEMP/release/site.tar.gz" -C build/client .
-          (cd "$RUNNER_TEMP/release" && sha256sum site.tar.gz > SHA256SUMS)
-          printf 'archive-sha256=%s\n' "$(cut -d ' ' -f 1 "$RUNNER_TEMP/release/SHA256SUMS")" >> "$GITHUB_OUTPUT"
+          node scripts/site-release.mjs package \
+            --source build/client --directory "$RUNNER_TEMP/release" \
+            --release-id "$SITE_RELEASE_ID" --commit-sha "$GITHUB_SHA" \
+            --output "$RUNNER_TEMP/release-info.json"
+          printf 'archive-sha256=%s\n' "$(node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1])).archiveSha256' "$RUNNER_TEMP/release-info.json")" >> "$GITHUB_OUTPUT"
+          printf 'manifest-sha256=%s\n' "$(node -p 'JSON.parse(require("node:fs").readFileSync(process.argv[1])).manifestSha256' "$RUNNER_TEMP/release-info.json")" >> "$GITHUB_OUTPUT"
           printf 'release-id=%s\n' "$SITE_RELEASE_ID" >> "$GITHUB_OUTPUT"
 
       - name: Save build artifact
@@ -83,7 +86,7 @@ jobs:
       environment: staging
       release-id: ${{ needs.build.outputs.release-id }}
       artifact-id: ${{ needs.build.outputs.artifact-id }}
-      archive-sha256: ${{ needs.build.outputs.archive-sha256 }}
+      manifest-sha256: ${{ needs.build.outputs.manifest-sha256 }}
 
   production:
     name: Publish and verify production
@@ -97,4 +100,4 @@ jobs:
       environment: production
       release-id: ${{ needs.build.outputs.release-id }}
       artifact-id: ${{ needs.build.outputs.artifact-id }}
-      archive-sha256: ${{ needs.build.outputs.archive-sha256 }}
+      manifest-sha256: ${{ needs.build.outputs.manifest-sha256 }}

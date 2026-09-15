@@ -145,7 +145,7 @@ Resources:
                 must:
                     - Update this mapping when supported routes change
                     - Preserve errors for missing assets
-                    - Redirect www to the configured primary domain before rewriting paths
+                    - Redirect every non-primary hostname to the configured primary domain before rewriting paths
                     - Preserve the original path and query parameters on the redirect
         Properties:
             Name: !Sub '${AWS::StackName}-pages'
@@ -157,7 +157,7 @@ Resources:
                 function handler(event) {
                   var request = event.request;
                   var primaryDomain = "${PrimaryDomainName}";
-                  if (primaryDomain && request.headers.host.value === "www." + primaryDomain) {
+                  if (primaryDomain && request.headers.host.value.toLowerCase() !== primaryDomain) {
                     var query = [];
                     Object.keys(request.querystring).forEach(function (key) {
                       var parameter = request.querystring[key];
@@ -222,7 +222,7 @@ Resources:
                     - Serve only the site prefix from the origin
                     - Preserve errors instead of replacing them with homepage HTML
                     - Attach an issued certificate before changing public DNS
-                    - Keep the CloudFront hostname available for verification and recovery
+                    - Redirect the CloudFront hostname when a primary domain is configured
         Properties:
             DistributionConfig:
                 Enabled: true
@@ -276,6 +276,7 @@ Resources:
                     - Restrict CloudFront access to this distribution
                     - Keep release archives outside the CloudFront allow rule
                     - Deny insecure transport
+                    - Require conditional creation for version 1 release archives and manifests
         Properties:
             Bucket: !Ref SiteBucket
             PolicyDocument:
@@ -290,6 +291,16 @@ Resources:
                       Condition:
                           StringEquals:
                               AWS:SourceArn: !Sub 'arn:${AWS::Partition}:cloudfront::${AWS::AccountId}:distribution/${Distribution}'
+                    - Sid: DenyReleaseOverwrite
+                      Effect: Deny
+                      Principal: '*'
+                      Action: s3:PutObject
+                      Resource: !Sub '${SiteBucket.Arn}/releases/v1/*'
+                      Condition:
+                          'Null':
+                              s3:if-none-match: 'true'
+                          Bool:
+                              s3:ObjectCreationOperation: 'true'
                     - Sid: DenyInsecureTransport
                       Effect: Deny
                       Principal: '*'
@@ -375,7 +386,7 @@ Outputs:
             - !Sub 'https://${Distribution.DomainName}'
 
     CloudFrontUrl:
-        Description: CloudFront HTTPS address for verification before DNS cutover
+        Description: CloudFront endpoint for connection testing; redirects when a custom domain is configured
         Value: !Sub 'https://${Distribution.DomainName}'
 
     DeployRoleArn:
