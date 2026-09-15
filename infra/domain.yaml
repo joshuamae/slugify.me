@@ -1,0 +1,200 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >-
+    Public DNS and an optional ACM certificate for a production website.
+    Preserve the previous website destination until verified CloudFront cutover.
+    Deploy this stack in us-east-1 and keep domain registration at the registrar.
+
+Metadata:
+    AWSToolsMetrics:
+        AWSAgentToolkit: aws-cloudformation@2
+
+Parameters:
+    DomainName:
+        Type: String
+        AllowedPattern: '^(?!-)[a-z0-9-]+(?<!-)(\.(?!-)[a-z0-9-]+(?<!-))+$'
+        Description: Existing domain without www or a trailing dot; do not change after creation
+
+    PreviousIpv4Addresses:
+        Type: CommaDelimitedList
+        AllowedPattern: '^([0-9]{1,3}\.){3}[0-9]{1,3}$'
+        Description: Verified previous apex IPv4 addresses, retained for DNS rollback
+
+    PreviousWwwTarget:
+        Type: String
+        AllowedPattern: '^(?!-)[a-z0-9-]+(?<!-)(\.(?!-)[a-z0-9-]+(?<!-))+\.?$'
+        Description: Previous www CNAME target, retained for DNS rollback
+
+    GoogleSiteVerification:
+        Type: String
+        Default: ''
+        AllowedPattern: '^[A-Za-z0-9_-]*$'
+        Description: Existing Google verification token without the google-site-verification prefix
+
+    EnableCertificate:
+        Type: String
+        Default: 'false'
+        AllowedValues: ['false', 'true']
+        Description: Enable after creating the zone; keep true once the certificate is in use
+
+    TrafficTarget:
+        Type: String
+        Default: previous
+        AllowedValues: [previous, cloudfront]
+        Description: Switch to cloudfront only after certificate and hostname verification
+
+    CloudFrontDomainName:
+        Type: String
+        Default: ''
+        AllowedPattern: '^$|^[a-z0-9]+\.cloudfront\.net$'
+        Description: Production distribution hostname without https
+
+Rules:
+    CutoverRequiresCloudFront:
+        RuleCondition: !Equals [!Ref TrafficTarget, cloudfront]
+        Assertions:
+            - Assert: !Not [!Equals [!Ref CloudFrontDomainName, '']]
+              AssertDescription: Provide the verified production CloudFront hostname before cutover
+            - Assert: !Equals [!Ref EnableCertificate, 'true']
+              AssertDescription: Enable and validate the certificate before cutover
+
+Conditions:
+    CreateCertificate: !Equals [!Ref EnableCertificate, 'true']
+    RouteToCloudFront: !Equals [!Ref TrafficTarget, cloudfront]
+    HasGoogleVerification: !Not [!Equals [!Ref GoogleSiteVerification, '']]
+
+Resources:
+    HostedZone:
+        Type: AWS::Route53::HostedZone
+        DeletionPolicy: Retain
+        UpdateReplacePolicy: Retain
+        Metadata:
+            com.aws.cloudformation.Context:
+                why: Host public DNS while domain registration remains at the existing registrar
+                must:
+                    - Copy and verify every existing record before changing registrar nameservers
+                    - Do not replace this zone or change its domain after delegation
+                    - Preserve external DNS records and certificate validation CNAMEs
+        Properties:
+            Name: !Ref DomainName
+            HostedZoneConfig:
+                Comment: !Sub '${AWS::StackName} production DNS'
+            HostedZoneTags:
+                - Key: Project
+                  Value: static-site
+                - Key: Environment
+                  Value: production
+
+    WebsiteRecords:
+        Type: AWS::Route53::RecordSetGroup
+        DeletionPolicy: Retain
+        UpdateReplacePolicy: Retain
+        Metadata:
+            com.aws.cloudformation.Context:
+                why: Keep one reversible switch between previous hosting and CloudFront
+                must:
+                    - Keep TrafficTarget previous until CloudFront serves the real hostnames correctly
+                    - Preserve the previous hosting destination for DNS rollback
+                    - Use both IPv4 and IPv6 aliases for CloudFront with target health evaluation disabled
+        Properties:
+            HostedZoneId: !Ref HostedZone
+            RecordSets: !If
+                - RouteToCloudFront
+                - - Name: !Ref DomainName
+                    Type: A
+                    AliasTarget:
+                        DNSName: !Ref CloudFrontDomainName
+                        HostedZoneId: Z2FDTNDATAQYW2
+                        EvaluateTargetHealth: false
+                  - Name: !Ref DomainName
+                    Type: AAAA
+                    AliasTarget:
+                        DNSName: !Ref CloudFrontDomainName
+                        HostedZoneId: Z2FDTNDATAQYW2
+                        EvaluateTargetHealth: false
+                  - Name: !Sub 'www.${DomainName}'
+                    Type: A
+                    AliasTarget:
+                        DNSName: !Ref CloudFrontDomainName
+                        HostedZoneId: Z2FDTNDATAQYW2
+                        EvaluateTargetHealth: false
+                  - Name: !Sub 'www.${DomainName}'
+                    Type: AAAA
+                    AliasTarget:
+                        DNSName: !Ref CloudFrontDomainName
+                        HostedZoneId: Z2FDTNDATAQYW2
+                        EvaluateTargetHealth: false
+                - - Name: !Ref DomainName
+                    Type: A
+                    TTL: '600'
+                    ResourceRecords: !Ref PreviousIpv4Addresses
+                  - Name: !Sub 'www.${DomainName}'
+                    Type: CNAME
+                    TTL: '600'
+                    ResourceRecords: [!Ref PreviousWwwTarget]
+
+    GoogleVerificationRecord:
+        Type: AWS::Route53::RecordSet
+        Condition: HasGoogleVerification
+        DeletionPolicy: Retain
+        UpdateReplacePolicy: Retain
+        Metadata:
+            com.aws.cloudformation.Context:
+                why: Preserve the existing domain verification record during DNS migration
+                must:
+                    - Preserve the token parameter when updating the stack
+        Properties:
+            HostedZoneId: !Ref HostedZone
+            Name: !Ref DomainName
+            Type: TXT
+            TTL: '600'
+            ResourceRecords:
+                - !Sub '"google-site-verification=${GoogleSiteVerification}"'
+
+    Certificate:
+        Type: AWS::CertificateManager::Certificate
+        Condition: CreateCertificate
+        DeletionPolicy: Retain
+        UpdateReplacePolicy: Retain
+        Metadata:
+            com.aws.cloudformation.Context:
+                why: Provide HTTPS for the primary domain and its www redirect through CloudFront
+                must:
+                    - Deploy in us-east-1 and use DNS validation
+                    - Keep validation CNAMEs for certificate renewal
+                    - While the old DNS provider is authoritative, copy validation CNAMEs there too
+                    - Keep EnableCertificate true while the certificate is attached to CloudFront
+        Properties:
+            DomainName: !Ref DomainName
+            SubjectAlternativeNames: [!Sub 'www.${DomainName}']
+            ValidationMethod: DNS
+            CertificateExport: DISABLED
+            KeyAlgorithm: RSA_2048
+            DomainValidationOptions:
+                - DomainName: !Ref DomainName
+                  HostedZoneId: !Ref HostedZone
+                - DomainName: !Sub 'www.${DomainName}'
+                  HostedZoneId: !Ref HostedZone
+            Tags:
+                - Key: Project
+                  Value: static-site
+                - Key: Environment
+                  Value: production
+
+Outputs:
+    HostedZoneId:
+        Description: Hosted zone containing the migrated public DNS records
+        Value: !Ref HostedZone
+
+    NameServers:
+        Description: Set these nameservers at the registrar only after checking all records
+        Value: !Join [',', !GetAtt HostedZone.NameServers]
+
+    CertificateArn:
+        Condition: CreateCertificate
+        Description: Issued certificate ARN to pass to the production site stack
+        Value: !Ref Certificate
+
+    TrafficTarget:
+        Description: Current website destination configured in this zone
+        Value: !Ref TrafficTarget

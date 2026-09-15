@@ -37,7 +37,35 @@ Parameters:
         AllowedPattern: '^$|^arn:[a-z-]+:iam::[0-9]{12}:oidc-provider/token\.actions\.githubusercontent\.com$'
         Description: Existing GitHub OIDC provider ARN, or empty to create one
 
+    PrimaryDomainName:
+        Type: String
+        Default: ''
+        AllowedPattern: '^$|^(?!-)[a-z0-9-]+(?<!-)(\.(?!-)[a-z0-9-]+(?<!-))+$'
+        Description: Optional canonical domain without www, paired with CertificateArn
+
+    CertificateArn:
+        Type: String
+        Default: ''
+        AllowedPattern: '^$|^arn:aws:acm:us-east-1:[0-9]{12}:certificate/[a-f0-9-]+$'
+        Description: Issued us-east-1 ACM certificate covering the primary domain and www
+
+Rules:
+    CustomDomainRequiresCertificate:
+        Assertions:
+            - Assert: !Or
+                  - !And
+                    - !Equals [!Ref PrimaryDomainName, '']
+                    - !Equals [!Ref CertificateArn, '']
+                  - !And
+                    - !Not [!Equals [!Ref PrimaryDomainName, '']]
+                    - !Not [!Equals [!Ref CertificateArn, '']]
+              AssertDescription: Set both PrimaryDomainName and CertificateArn, or leave both empty
+
 Conditions:
+    UseCustomDomain: !And
+        - !Not [!Equals [!Ref PrimaryDomainName, '']]
+        - !Not [!Equals [!Ref CertificateArn, '']]
+
     UseExplicitGitHubOidcSubjectPrefix: !Not
         - !Equals
           - !Ref GitHubOidcSubjectPrefix
@@ -117,15 +145,37 @@ Resources:
                 must:
                     - Update this mapping when supported routes change
                     - Preserve errors for missing assets
+                    - Redirect www to the configured primary domain before rewriting paths
+                    - Preserve the original path and query parameters on the redirect
         Properties:
             Name: !Sub '${AWS::StackName}-pages'
             AutoPublish: true
             FunctionConfig:
                 Comment: Map known page URLs to generated HTML files
                 Runtime: cloudfront-js-2.0
-            FunctionCode: |
+            FunctionCode: !Sub |
                 function handler(event) {
                   var request = event.request;
+                  var primaryDomain = "${PrimaryDomainName}";
+                  if (primaryDomain && request.headers.host.value === "www." + primaryDomain) {
+                    var query = [];
+                    Object.keys(request.querystring).forEach(function (key) {
+                      var parameter = request.querystring[key];
+                      (parameter.multiValue || [parameter]).forEach(function (item) {
+                        query.push(key + "=" + item.value);
+                      });
+                    });
+                    return {
+                      statusCode: 301,
+                      statusDescription: "Moved Permanently",
+                      headers: {
+                        location: {
+                          value: "https://" + primaryDomain + request.uri +
+                            (query.length ? "?" + query.join("&") : "")
+                        }
+                      }
+                    };
+                  }
                   var path = request.uri.replace(/\/$/, "") || "/";
                   var pages = {
                     "/": "/index.html",
@@ -171,6 +221,8 @@ Resources:
                     - Keep S3 access authenticated through OAC
                     - Serve only the site prefix from the origin
                     - Preserve errors instead of replacing them with homepage HTML
+                    - Attach an issued certificate before changing public DNS
+                    - Keep the CloudFront hostname available for verification and recovery
         Properties:
             DistributionConfig:
                 Enabled: true
@@ -178,6 +230,10 @@ Resources:
                 DefaultRootObject: index.html
                 HttpVersion: http2
                 IPV6Enabled: true
+                Aliases: !If
+                    - UseCustomDomain
+                    - [!Ref PrimaryDomainName, !Sub 'www.${PrimaryDomainName}']
+                    - !Ref AWS::NoValue
                 Origins:
                     - Id: site
                       DomainName: !GetAtt SiteBucket.RegionalDomainName
@@ -204,8 +260,12 @@ Resources:
                       ErrorCachingMinTTL: 0
                     - ErrorCode: 404
                       ErrorCachingMinTTL: 0
-                ViewerCertificate:
-                    CloudFrontDefaultCertificate: true
+                ViewerCertificate: !If
+                    - UseCustomDomain
+                    - AcmCertificateArn: !Ref CertificateArn
+                      SslSupportMethod: sni-only
+                      MinimumProtocolVersion: TLSv1.2_2025
+                    - CloudFrontDefaultCertificate: true
 
     BucketPolicy:
         Type: AWS::S3::BucketPolicy
@@ -309,6 +369,13 @@ Outputs:
 
     SiteUrl:
         Description: Public HTTPS address for this environment
+        Value: !If
+            - UseCustomDomain
+            - !Sub 'https://${PrimaryDomainName}'
+            - !Sub 'https://${Distribution.DomainName}'
+
+    CloudFrontUrl:
+        Description: CloudFront HTTPS address for verification before DNS cutover
         Value: !Sub 'https://${Distribution.DomainName}'
 
     DeployRoleArn:
