@@ -57,12 +57,12 @@ jobs:
       SITE_ARTIFACT_ID: ${{ inputs.artifact-id }}
       SITE_MANIFEST_SHA256: ${{ inputs.manifest-sha256 }}
       SITE_RECOVER_OPERATION: ${{ inputs.recover-operation }}
-      STAGING_BASIC_AUTH: ${{ inputs.environment == 'staging' && secrets.STAGING_BASIC_AUTH || '' }}
 
     steps:
       - name: Check environment settings
         env:
           AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+          STAGING_BASIC_AUTH: ${{ inputs.environment == 'staging' && secrets.STAGING_BASIC_AUTH || '' }}
         run: |
           case "$SITE_ENVIRONMENT" in
             staging | production) ;;
@@ -115,6 +115,8 @@ jobs:
           mask-aws-account-id: true
 
       - name: Publish selected release and verify every file
+        env:
+          STAGING_BASIC_AUTH: ${{ inputs.environment == 'staging' && secrets.STAGING_BASIC_AUTH || '' }}
         run: |
           arguments=(--release-id "$SITE_RELEASE_ID" --output "$RUNNER_TEMP/release-verification.json")
           if [[ -n "$SITE_RECOVER_OPERATION" ]]; then
