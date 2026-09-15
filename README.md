@@ -696,7 +696,10 @@ to each environment using its own stack outputs:
 Add `STAGING_BASIC_AUTH` as an **environment secret** on `staging`, using the
 `username:password` value from **Set up staging credentials**. Do not add it to
 production. The reusable publishing workflow reads the selected environment's
-secret for both deployment and rollback; callers do not need `secrets: inherit`.
+secret for both deployment and rollback. Keep `secrets: inherit` on the staging
+deployment and rollback jobs that call this workflow. This works around a
+[reported GitHub Actions issue](https://github.com/actions/runner/issues/4453)
+where environment secrets resolve to empty values without inheritance.
 
 Restrict both environments to the `main` branch. Require a reviewer for
 production and disable administrator bypass. The environment restrictions enforce
