@@ -540,26 +540,43 @@ function readRelease(store, releaseId, directory, expectedManifestHash) {
 }
 
 /** Fetch decoded HTTP bytes and final response headers with bounded network retries. */
-function request(url, directory) {
+export function request(url, directory, authorization, run = command) {
+	if (authorization)
+		assert.ok(
+			/^Basic [A-Za-z0-9+/]+={0,2}$/.test(authorization),
+			'Invalid Basic authorization header',
+		);
 	const headerFile = path.join(directory, 'headers');
 	const bodyFile = path.join(directory, 'body');
 	const status = Number(
-		command('curl', [
-			'--compressed',
-			'--silent',
-			'--show-error',
-			'--retry',
-			'3',
-			'--max-time',
-			'30',
-			'--dump-header',
-			headerFile,
-			'--output',
-			bodyFile,
-			'--write-out',
-			'%{http_code}',
-			url,
-		]),
+		run(
+			'curl',
+			[
+				'--disable',
+				'--proto',
+				'=https',
+				...(authorization ? ['--config', '-'] : []),
+				'--compressed',
+				'--silent',
+				'--show-error',
+				'--retry',
+				'3',
+				'--max-time',
+				'30',
+				'--dump-header',
+				headerFile,
+				'--output',
+				bodyFile,
+				'--write-out',
+				'%{http_code}',
+				url,
+			],
+			authorization
+				? {
+						input: `header = "Authorization: ${authorization}"\n`,
+					}
+				: {},
+		),
 	);
 	const raw = fs
 		.readFileSync(headerFile, 'utf8')
@@ -583,7 +600,7 @@ function request(url, directory) {
 }
 
 /** Require successful status, expected MIME/cache metadata, size and exact content digest. */
-export function verifyResponse(response, file) {
+export function verifyResponse(response, file, environment = 'production') {
 	assert.equal(response.status, 200, file.path);
 	assert.equal(
 		response.headers['content-type']?.split(';')[0].trim(),
@@ -592,16 +609,80 @@ export function verifyResponse(response, file) {
 	);
 	assert.equal(
 		response.headers['cache-control'],
-		file.cacheControl,
+		environment === 'staging' ? 'private, no-store' : file.cacheControl,
 		`${file.path}: cache control`,
 	);
 	assert.equal(response.body.length, file.size, `${file.path}: size`);
 	assert.equal(sha256(response.body), file.sha256, `${file.path}: contents`);
+	if (environment === 'staging') {
+		assert.equal(
+			response.headers['x-robots-tag'],
+			'noindex',
+			`${file.path}: indexing`,
+		);
+	} else {
+		assert.ok(
+			!/\b(?:noindex|none)\b/i.test(
+				response.headers['x-robots-tag'] || '',
+			),
+			`${file.path}: production must remain indexable`,
+		);
+	}
 }
 
-/** Verify every manifest file and public route, missing-resource errors and anonymous S3 denial. */
-function verifyPublished(cfg, manifest, directory) {
+/** Build credentials only for staging; never include the secret in validation errors. */
+export function stagingAuthorization(
+	environment,
+	credentials = process.env.STAGING_BASIC_AUTH,
+) {
+	if (environment !== 'staging') return undefined;
+	assert.ok(
+		typeof credentials === 'string' &&
+			/^[^:\s]+:[^\r\n]+$/.test(credentials),
+		'Set STAGING_BASIC_AUTH to username:password for staging verification',
+	);
+	const value =
+		'Basic ' + Buffer.from(credentials, 'utf8').toString('base64');
+	assert.ok(
+		value.length <= 2048,
+		'STAGING_BASIC_AUTH exceeds the supported length',
+	);
+	return value;
+}
+
+/** Check the staging gate before taking a release lock or writing objects; an empty origin may return 403/404. */
+export function verifyStagingAccess(cfg, directory, fetch = request) {
+	if (cfg.environment !== 'staging') return;
+	assert.ok(cfg.authorization, 'Staging verification requires credentials');
+	assert.equal(
+		fetch(cfg.url + '/', directory).status,
+		401,
+		'Staging must require authentication before publishing',
+	);
+	const response = fetch(cfg.url + '/', directory, cfg.authorization);
+	assert.ok(
+		[200, 403, 404].includes(response.status),
+		'Staging credentials were rejected or the site is unavailable',
+	);
+	assert.equal(
+		response.headers['x-robots-tag'],
+		'noindex',
+		'Staging must disable indexing before publishing',
+	);
+	assert.equal(
+		response.headers['cache-control'],
+		'private, no-store',
+		'Staging must disable browser caching before publishing',
+	);
+}
+
+/** Verify every file and route, auth on warm caches, missing resources and anonymous S3 denial. */
+export function verifyPublished(cfg, manifest, directory, fetch = request) {
 	const results = [];
+	const authorization =
+		cfg.environment === 'staging' ? cfg.authorization : undefined;
+	if (cfg.environment === 'staging')
+		assert.ok(authorization, 'Staging verification requires credentials');
 	const checks = manifest.files.map((file) => ({
 		urlPath: '/' + file.path,
 		file,
@@ -612,14 +693,44 @@ function verifyPublished(cfg, manifest, directory) {
 		if (route !== '/') checks.push({ urlPath: route + '/', file });
 	}
 	for (const { urlPath, file } of checks) {
-		const response = request(cfg.url + urlPath, directory);
-		verifyResponse(response, file);
+		const response = fetch(cfg.url + urlPath, directory, authorization);
+		verifyResponse(response, file, cfg.environment);
+		if (cfg.environment === 'staging') {
+			for (const invalid of [
+				undefined,
+				'Basic ' +
+					Buffer.from(randomUUID() + ':invalid').toString('base64'),
+			]) {
+				const denied = fetch(cfg.url + urlPath, directory, invalid);
+				assert.equal(
+					denied.status,
+					401,
+					`${urlPath}: unauthorized access must fail even after a cache fill`,
+				);
+				assert.equal(
+					denied.headers['www-authenticate'],
+					'Basic realm="Staging", charset="UTF-8"',
+				);
+				assert.equal(denied.headers['x-robots-tag'], 'noindex');
+				assert.equal(
+					denied.headers['cache-control'],
+					'private, no-store',
+				);
+			}
+		}
 		results.push({
 			path: urlPath,
 			status: response.status,
 			contentType: response.headers['content-type'],
 			cacheControl: response.headers['cache-control'],
 			cache: response.headers['x-cache'],
+			...(cfg.environment === 'staging'
+				? {
+						indexing: response.headers['x-robots-tag'],
+						anonymousStatus: 401,
+						incorrectCredentialsStatus: 401,
+					}
+				: {}),
 		});
 		console.log(`Verified ${urlPath}`);
 	}
@@ -628,12 +739,14 @@ function verifyPublished(cfg, manifest, directory) {
 		`/missing-${manifest.releaseId}`,
 	]) {
 		assert.ok(
-			[403, 404].includes(request(cfg.url + missing, directory).status),
+			[403, 404].includes(
+				fetch(cfg.url + missing, directory, authorization).status,
+			),
 			`Missing resource returned successful HTML: ${missing}`,
 		);
 	}
 	assert.equal(
-		request(
+		fetch(
 			`https://${cfg.bucket}.s3.${cfg.region}.amazonaws.com/site/index.html`,
 			directory,
 		).status,
@@ -643,7 +756,7 @@ function verifyPublished(cfg, manifest, directory) {
 	return results;
 }
 
-/** Upload assets before HTML, invalidate CloudFront, verify public content, then advance state. */
+/** Upload assets before HTML, invalidate CloudFront, verify content/access, then advance state. */
 function publish(
 	cfg,
 	store,
@@ -972,6 +1085,11 @@ export function main(args = process.argv.slice(2)) {
 		return;
 	}
 	const cfg = config();
+	if (['publish', 'rollback', 'adopt', 'verify'].includes(action)) {
+		cfg.authorization = stagingAuthorization(cfg.environment);
+		if (cfg.environment === 'staging')
+			temporary((directory) => verifyStagingAccess(cfg, directory));
+	}
 	temporary((temp) => {
 		const store = storeFor(cfg, temp);
 		let result;

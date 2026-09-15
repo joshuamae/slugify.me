@@ -156,10 +156,10 @@ The CloudFormation template in `infra/site.yaml` describes the AWS resources
 needed to host the generated website. CloudFormation creates related resources
 together as a **stack**. Use separate stacks for staging and production.
 
-- **Staging** — A practice environment for testing deployments
+- **Staging** — A password-protected environment for testing deployments
 - **Production** — The environment intended for visitors
 - **S3** — Storage for the generated website files
-- **CloudFront** — Public HTTPS delivery of those files
+- **CloudFront** — HTTPS delivery with password checks on staging
 - **OIDC** — A way for GitHub to obtain temporary AWS deployment credentials
 
 The template prepares hosting resources and a GitHub deployment role. Steps 8–9
@@ -183,6 +183,8 @@ Run commands from the repository root in Bash or Zsh. You need:
 - GitHub CLI (`gh`) installed and signed in with access to the repository's OIDC settings
 - AWS permissions to create the S3, CloudFront, and IAM resources in the template
 - Node.js 24 and npm for building the website
+- Python 3 for hidden terminal entry of staging credentials
+- AWS permissions to create a staging credential digest secret and allow the CloudFormation execution identity to read its selected version
 - `curl`, `gzip`, and `shasum` available in the terminal
 - GNU tar 1.28 or newer for packaging and tests; the tool checks `gtar` first, then `tar`
 - Your GitHub repository name in `OWNER/REPOSITORY` format
@@ -292,6 +294,74 @@ If `cfn-lint` is installed, also check resource schemas locally:
 cfn-lint infra/site.yaml
 ```
 
+### Set up staging credentials
+
+Staging requires a browser username and password for every page and asset,
+including `robots.txt` and `sitemap.xml`. CloudFront checks credentials before
+serving cached content. Production stays publicly accessible. The browser app
+still runs entirely on the device and uses the same build in both environments.
+
+The template resolves a SHA-256 **digest** (a one-way representation of the
+authorization header) from AWS Secrets Manager into the CloudFront function.
+It never embeds the password in repository files or deployment artifacts.
+Use a password manager to generate a unique random password of at least 32
+characters. Anyone allowed to read the deployed function can read the digest;
+a strong random password prevents practical guessing against that digest.
+
+1. Set the deployment settings above for `staging`, then enter
+   `username:password` at the hidden prompt below. Use a username without spaces
+   or colons. Keep the password in your password manager. Do not enable shell
+   tracing (`set -x`) while handling credentials.
+
+   ```sh
+   STAGING_BASIC_AUTH="$(python3 -c 'import getpass; print(getpass.getpass("Staging username:password: "))')" && export STAGING_BASIC_AUTH
+   ```
+
+2. Create a secret containing only the digest. This command prints its ARN and
+   version ID, which identify the secret without revealing the password.
+   Secrets Manager storage incurs AWS charges.
+
+   ```sh
+   (
+     set -e
+     set -o pipefail
+     node --input-type=module -e '
+       import { sha256, stagingAuthorization } from "./scripts/site-release.mjs";
+       console.log(JSON.stringify({ authorizationSha256: sha256(stagingAuthorization("staging")) }));
+     ' | aws secretsmanager create-secret \
+       --region "$AWS_REGION" \
+       --name "$SITE_STACK/access" \
+       --secret-string file:///dev/stdin \
+       --query '{ARN:ARN,VersionId:VersionId}' \
+       --output json
+   )
+   ```
+
+3. Copy the returned identifiers into these settings. CloudFormation needs
+   `secretsmanager:GetSecretValue` on this secret; a customer-managed encryption
+   key also requires the relevant `kms:Decrypt` permission. The GitHub deployment
+   role does not need access to Secrets Manager.
+
+   ```sh
+   export SITE_STAGING_AUTH_SECRET_ARN="PASTE_SECRET_ARN_HERE"
+   export SITE_STAGING_AUTH_SECRET_VERSION_ID="PASTE_VERSION_ID_HERE"
+   ```
+
+4. Create the GitHub `staging` environment if needed and save the same
+   `username:password` value as its `STAGING_BASIC_AUTH` secret. This sends the
+   value over standard input rather than including it in command arguments.
+
+   ```sh
+   printf '%s' "$STAGING_BASIC_AUTH" | gh secret set STAGING_BASIC_AUTH \
+     --repo "$SITE_REPOSITORY" \
+     --env staging
+   ```
+
+Expected result: AWS stores the digest and GitHub stores the credentials.
+Neither action changes access to the live site. Keep `STAGING_BASIC_AUTH` in
+the terminal environment for local `publish`, `rollback`, `adopt`, and `verify`
+commands; unset it when finished. Production commands ignore this setting.
+
 ### 4. Preview the infrastructure changes
 
 A **change set** previews the resources AWS would create or update. This command
@@ -310,6 +380,8 @@ aws cloudformation deploy \
     GitHubRepository="$SITE_REPOSITORY" \
     GitHubOidcSubjectPrefix="${SITE_OIDC_SUBJECT_PREFIX:?Read the GitHub OIDC prefix before continuing}" \
     ExistingOidcProviderArn="$SITE_OIDC_ARN" \
+    StagingAuthSecretArn="${SITE_STAGING_AUTH_SECRET_ARN:-}" \
+    StagingAuthSecretVersionId="${SITE_STAGING_AUTH_SECRET_VERSION_ID:-}" \
   --no-execute-changeset
 ```
 
@@ -330,7 +402,7 @@ aws cloudformation describe-change-set \
 ```
 
 For a new stack, expect additions for the bucket, distribution, access policies,
-cache policy, URL function, and deployment role. An identity provider is also
+cache policy, URL function, staging response headers policy, and deployment role. An identity provider is also
 added if one does not already exist. Review the changes before continuing.
 
 ### 5. Create the staging resources
@@ -462,6 +534,9 @@ Run the following block from the same checkout used to build the release. It
 reads current stack outputs, checks all four pages, samples a generated JavaScript
 and CSS file, and checks public access. Use your operator AWS identity for these
 checks; the GitHub deployment role does not grant bucket-policy inspection.
+Set `STAGING_BASIC_AUTH` using the hidden prompt in **Set up staging credentials**
+before running this block. The helper sends the header through standard input,
+does not follow redirects, and disables local curl configuration files.
 
 ```sh
 (
@@ -480,8 +555,15 @@ checks; the GitHub deployment role does not grant bucket-policy inspection.
   SITE_BUCKET="$(stack_output BucketName)"
   SITE_URL="$(stack_output SiteUrl)"
 
+  staging_curl() {
+    node --input-type=module -e '
+      import { stagingAuthorization } from "./scripts/site-release.mjs";
+      console.log("header = \"Authorization: " + stagingAuthorization("staging") + "\"");
+    ' | curl --disable --proto '=https' --config - "$@"
+  }
+
   for SITE_PATH in / /about /faq /privacy-policy; do
-    curl --fail --silent --show-error --head --max-time 30 \
+    staging_curl --fail --silent --show-error --head --max-time 30 \
       --write-out 'Checked %{url_effective}: %{http_code}\n' \
       "$SITE_URL$SITE_PATH"
   done
@@ -491,18 +573,20 @@ checks; the GitHub deployment role does not grant bucket-policy inspection.
 
   for SITE_ASSET in "$SITE_JS" "$SITE_CSS"; do
     test -n "$SITE_ASSET"
-    curl --fail --silent --show-error --head --max-time 30 \
+    staging_curl --fail --silent --show-error --head --max-time 30 \
       --write-out 'Checked %{url_effective}: %{http_code}\n' \
       "$SITE_URL/${SITE_ASSET#build/client/}"
   done
 
-  curl --fail --silent --show-error --max-time 30 "$SITE_URL/robots.txt"
-  curl --fail --silent --show-error --max-time 30 "$SITE_URL/sitemap.xml"
+  staging_curl --fail --silent --show-error --max-time 30 "$SITE_URL/robots.txt"
+  staging_curl --fail --silent --show-error --max-time 30 "$SITE_URL/sitemap.xml"
+
+  curl --disable --silent --show-error --head --max-time 30 "$SITE_URL/"
 
   aws s3api get-public-access-block --bucket "$SITE_BUCKET"
   aws s3api get-bucket-policy-status --bucket "$SITE_BUCKET"
 
-  curl --silent --show-error --output /dev/null --max-time 30 \
+  staging_curl --silent --show-error --output /dev/null --max-time 30 \
     --write-out 'Missing asset status: %{http_code}\n' \
     "$SITE_URL/assets/intentionally-missing.js"
 
@@ -518,9 +602,11 @@ access settings; they do not automatically assert every value in this table.
 | Check | Expected result |
 | --- | --- |
 | All four page URLs | `200` with `Content-Type: text/html; charset=utf-8` |
-| HTML caching | `Cache-Control: no-cache,max-age=0,must-revalidate` |
+| HTML caching | `Cache-Control: private, no-store` |
 | Sample JavaScript and CSS | `200` with appropriate JavaScript and CSS content types |
-| Hashed asset caching | `Cache-Control: public,max-age=31536000,immutable` |
+| Hashed asset browser caching | `Cache-Control: private, no-store` |
+| Staging indexing | `X-Robots-Tag: noindex` |
+| Anonymous staging request | `401` with a `WWW-Authenticate: Basic` challenge |
 | `robots.txt` and `sitemap.xml` | Actual text and XML contents, rather than homepage HTML |
 | S3 public-access blocks | All four values `true` |
 | S3 policy status | `IsPublic: false` |
@@ -534,7 +620,7 @@ The sitemap retains the application's configured production URLs.
 
 Finish with a browser check:
 
-1. Open the website address printed by the upload command
+1. Open the website address printed by the upload command in a new private window and confirm that it asks for credentials before showing content; enter your staging username and password
 2. In **Text to slugify**, enter `Hello, World!` and confirm **Generated slug** shows `hello-world`
 3. Append ` Again` and confirm the result immediately changes to `hello-world-again`
 4. Press Tab to focus **Copy generated slug**, then Enter, and confirm the copy-success message appears
@@ -565,7 +651,8 @@ releases/
 ```
 
 CloudFront can read `site/`. It cannot read the private archives under
-`releases/`. The website itself is public through CloudFront.
+`releases/`. Production is public through CloudFront; staging requires credentials
+on every request.
 
 Apply these headers when uploading:
 
@@ -606,6 +693,11 @@ to each environment using its own stack outputs:
 | `CLOUDFRONT_DISTRIBUTION_ID` | `DistributionId` |
 | `SITE_URL` | `SiteUrl` |
 
+Add `STAGING_BASIC_AUTH` as an **environment secret** on `staging`, using the
+`username:password` value from **Set up staging credentials**. Do not add it to
+production. The reusable publishing workflow reads the selected environment's
+secret for both deployment and rollback; callers do not need `secrets: inherit`.
+
 Restrict both environments to the `main` branch. Require a reviewer for
 production and disable administrator bypass. The environment restrictions enforce
 the branch policy because the AWS trust rule identifies the repository and
@@ -617,6 +709,123 @@ publishing and cache invalidation permissions; infrastructure changes use the
 operator's separate AWS identity. OIDC lets GitHub request temporary credentials
 without storing AWS access keys in GitHub. See
 [GitHub's AWS OIDC guide](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws).
+
+### Enable protection on an existing staging stack
+
+Changing the source files does not protect a running distribution. Coordinate
+the infrastructure update with the release workflow: the previous verifier
+cannot authenticate, and the new verifier refuses to publish to unprotected
+staging. Finish or stop active release operations and pause new merges during
+this transition. Use the checkout containing these changes for local checks.
+
+1. Complete **Set up staging credentials** and save the GitHub staging secret
+2. Preview the staging stack update below; omitted parameters retain their
+   current values on an existing stack, including OIDC ownership and custom domains
+
+   ```sh
+   aws cloudformation deploy \
+     --region "$AWS_REGION" \
+     --stack-name "$SITE_STACK" \
+     --template-file infra/site.yaml \
+     --capabilities CAPABILITY_IAM \
+     --parameter-overrides \
+       Environment=staging \
+       StagingAuthSecretArn="${SITE_STAGING_AUTH_SECRET_ARN:?Set the staging secret ARN}" \
+       StagingAuthSecretVersionId="${SITE_STAGING_AUTH_SECRET_VERSION_ID:?Set the staging secret version}" \
+     --no-execute-changeset
+   ```
+
+3. Inspect and execute the returned change set using the commands in steps 4–5.
+   Expect an update to `PageRewrite` and `Distribution`, plus the new
+   `StagingResponseHeaders` policy. The bucket, archives, deployment role, and
+   production stack should remain unchanged. For an existing stack, wait with
+   `stack-update-complete` instead of `stack-create-complete`.
+4. Confirm anonymous `GET` and `HEAD` requests return `401`. Open a fresh private
+   browser window, enter the password, and complete **Verify staging**. Previously
+   downloaded browser copies cannot be revoked by adding authentication.
+5. Use `node scripts/site-release.mjs verify --release-id CURRENT_RELEASE_ID`
+   with the staging environment settings to check the current release. This
+   checks exact file contents, authenticated access, `noindex`, browser cache
+   restrictions, and missing/incorrect credentials after authorized requests
+6. Merge the source changes through the usual review process and resume releases
+
+Expected result: staging requires the password and the updated release verifier
+passes. Updating the CloudFront function protects cache hits too, so enabling
+authentication does not depend on an invalidation. The viewer response uses
+`Cache-Control: private, no-store`; CloudFront's internal cache and the stored
+artifact metadata remain unchanged. Production retains its existing cache headers.
+
+### Rotate the staging password
+
+1. Pause new releases and enter the new credentials using the hidden prompt in
+   **Set up staging credentials**
+2. Store a new digest version in the existing secret
+
+   ```sh
+   (
+     set -e
+     set -o pipefail
+     node --input-type=module -e '
+       import { sha256, stagingAuthorization } from "./scripts/site-release.mjs";
+       console.log(JSON.stringify({ authorizationSha256: sha256(stagingAuthorization("staging")) }));
+     ' | aws secretsmanager put-secret-value \
+       --region "$AWS_REGION" \
+       --secret-id "$SITE_STAGING_AUTH_SECRET_ARN" \
+       --secret-string file:///dev/stdin \
+       --query '{ARN:ARN,VersionId:VersionId}' \
+       --output json
+   )
+   ```
+
+3. Set `SITE_STAGING_AUTH_SECRET_VERSION_ID` to the returned version ID and update
+   the GitHub staging secret with the command in **Set up staging credentials**
+4. Preview and apply the staging stack update as described above, then verify
+   that the new password works and the old password receives `401`
+5. Resume releases and run `unset STAGING_BASIC_AUTH` in the local terminal
+
+Changing a Secrets Manager value alone does not refresh deployed function code.
+The explicit version parameter makes rotation an intentional CloudFormation
+update and supports reverting to a known version. Retain any secret version
+needed for infrastructure rollback. The secret is managed separately from the
+stack; retiring the stack does not delete it. See
+[CloudFormation secret references](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/dynamic-references-secretsmanager.html).
+
+### Keep staging and CloudFront addresses out of search results
+
+Staging's password requirement prevents Google from reading the content.
+CloudFront also adds `X-Robots-Tag: noindex` to staging responses, including
+authentication failures. This header is an additional indexing directive;
+the password requirement is the access control. Do not add `noindex` to the
+shared HTML build, because that would also affect production.
+
+Keep the shared `robots.txt` crawl rules unchanged. A `Disallow: /` rule can
+prevent Google from seeing indexing directives and does not guarantee that a
+URL disappears from search. Google recommends password protection for private
+content and eventually removes previously indexed protected content. For faster
+removal of existing results, use Search Console's temporary Removals tool for
+the affected staging property while keeping password protection enabled. See
+[Google's content controls](https://developers.google.com/search/docs/crawling-indexing/control-what-you-share),
+[noindex guidance](https://developers.google.com/search/docs/crawling-indexing/block-indexing),
+and [removal instructions](https://developers.google.com/search/docs/crawling-indexing/remove-information).
+
+When `PrimaryDomainName` is configured, production's generated CloudFront
+hostname returns a permanent `301` redirect to that domain, preserving the path
+and query parameters. Google uses this as a signal to index the destination.
+Verify this redirect after infrastructure changes; a production stack without
+a primary domain still serves its generated hostname publicly. See
+[Google's redirect guidance](https://developers.google.com/search/docs/crawling-indexing/301-redirects).
+
+### Troubleshoot staging access
+
+| Symptom | Check |
+| --- | --- |
+| Stack update rejects missing credentials | Set both `StagingAuthSecretArn` and `StagingAuthSecretVersionId` for staging |
+| CloudFormation cannot resolve the digest | Check the secret ARN, version ID, `authorizationSha256` JSON key, and execution identity's secret/key permissions |
+| Correct browser credentials receive `401` | Recompute the digest from the exact UTF-8 `username:password`, deploy the matching secret version, and retry in a private window |
+| Deployment reports missing or rejected credentials | Set the staging environment secret in GitHub or `STAGING_BASIC_AUTH` locally; confirm it matches the deployed digest |
+| Deployment reports staging is unprotected | Apply the staging infrastructure update before running the new release workflow |
+| Verification fails on indexing or cache headers | Confirm the staging response headers policy is attached and deployed |
+| Google still lists a staging URL | Keep authentication enabled; removal requires recrawling or a Search Console removal request |
 
 ### Create the production stack
 
@@ -910,7 +1119,7 @@ was previously deployed successfully.
 
 #### Restore a selected release
 
-For routine rollback, use the workflow after it is merged into the default
+For routine rollback, use the **Roll back site** workflow on the default
 branch. Select a known-good release that exists in the target environment's
 manifest-backed S3 archive:
 
@@ -980,10 +1189,46 @@ The two selected archives came from different successful commits but contained
 the same website files, so this rehearsal verified archive restoration and
 metadata handling without a visible application-version change. The controlled
 failure exercise remains separate work in [#66](https://github.com/joshuamae/slugify.me/issues/66).
-GitHub execution of the new workflows and production policy/state initialization
-remain pending until the source changes are merged and production setup is
-completed. Release identities and progress are recorded in
-[#57](https://github.com/joshuamae/slugify.me/issues/57).
+
+#### Verify the merged release workflows — 2026-09-15
+
+[PR #78](https://github.com/joshuamae/slugify.me/pull/78) merged the release tools
+and workflows. The subsequent [deployment run](https://github.com/joshuamae/slugify.me/actions/runs/35002257182)
+passed checks and the production build, then published and verified the same
+archive in staging and production using temporary AWS credentials. GitHub
+recorded the owner's production approval; administrator bypass was disabled.
+
+The **Roll back site** workflow then restored the previous staging archive and
+returned staging to its original current release. Both runs downloaded their
+archives from S3 without rebuilding the application.
+
+| Operation | Measured duration | Verification completed (UTC) | Evidence |
+| --- | --- | --- | --- |
+| Restore the previous staging release | 62 seconds | 17:56:07 | [Rollback run](https://github.com/joshuamae/slugify.me/actions/runs/35004201885) |
+| Restore the original current staging release | 71 seconds | 17:59:24 | [Restoration run](https://github.com/joshuamae/slugify.me/actions/runs/35004513823) |
+
+These durations use the same operation boundaries as the earlier rehearsal and
+exclude archive retrieval, extraction, queue time, and approval time.
+
+- Both staging runs passed all 33 file checks and seven page-route checks, including exact contents, sizes, MIME types, and cache headers
+- Missing assets and unknown routes returned errors, and anonymous direct S3 access was denied
+- Browser checks after both staging runs passed accented and non-ASCII conversion, keyboard copy confirmation, and direct loads and refreshes on all four pages
+- Final staging state recorded the original current release as active, the rehearsed release as previous, and no pending operation
+- The reviewed production stack update changed only the bucket policy, required conditional archive creation, and completed without resource replacement
+- The previous production archive was checked against its recorded SHA-256 and registered with a manifest as an explicit rollback candidate
+- Production's current archive passed all 40 file and route checks after the policy update and archive registration
+
+Production's `previous` reference remains `null`: its first publication through
+the new workflow initialized only `active`. Registering an older archive does
+not change this history. A successful publication of a different release moves
+the existing active release to `previous`; restoring the current release alone
+does not fill that field. Keep the imported candidate's release ID available for
+explicit selection until then. Do not edit the state object manually or use
+`adopt` on an initialized environment.
+
+The production previous-release reference remains tracked in
+[#57](https://github.com/joshuamae/slugify.me/issues/57). The controlled failure
+exercise remains [#66](https://github.com/joshuamae/slugify.me/issues/66).
 
 #### Recover an interrupted operation
 

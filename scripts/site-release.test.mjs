@@ -10,12 +10,16 @@ import {
 	packageRelease,
 	parseOptions,
 	prune,
+	request,
 	retentionPlan,
 	safePath,
 	sha256,
+	stagingAuthorization,
 	validateArchiveEntries,
 	validateManifest,
 	verifyResponse,
+	verifyPublished,
+	verifyStagingAccess,
 	withOperation,
 } from './site-release.mjs';
 
@@ -23,6 +27,242 @@ const temporaryDirectories = [];
 const commit = 'a'.repeat(40);
 const releaseId = `${commit.slice(0, 12)}-123-1`;
 const createdAt = '2026-09-15T12:00:00.000Z';
+
+describe('staging access verification', () => {
+	const credentials = 'reviewer:example-test-password';
+	const authorization =
+		'Basic ' + Buffer.from(credentials).toString('base64');
+
+	it('checks access before deployment, allowing an empty origin but rejecting redirects, outages, or missing restrictions', () => {
+		const cfg = {
+			environment: 'staging',
+			url: 'https://staging.example.com',
+			authorization,
+		};
+		const headers = {
+			'x-robots-tag': 'noindex',
+			'cache-control': 'private, no-store',
+		};
+		for (const status of [200, 403, 404]) {
+			expect(() =>
+				verifyStagingAccess(cfg, '', (_url, _directory, auth) => ({
+					status: auth ? status : 401,
+					headers,
+				})),
+			).not.toThrow();
+		}
+		for (const status of [301, 401, 500, 503]) {
+			expect(() =>
+				verifyStagingAccess(cfg, '', (_url, _directory, auth) => ({
+					status: auth ? status : 401,
+					headers,
+				})),
+			).toThrow('rejected or the site is unavailable');
+		}
+		expect(() =>
+			verifyStagingAccess(cfg, '', () => ({ status: 200, headers })),
+		).toThrow('require authentication');
+		expect(() =>
+			verifyStagingAccess(cfg, '', (_url, _directory, auth) => ({
+				status: auth ? 200 : 401,
+				headers: {},
+			})),
+		).toThrow('disable indexing');
+	});
+
+	it('requires staging credentials and never enables them for production', () => {
+		expect(stagingAuthorization('staging', credentials)).toBe(
+			authorization,
+		);
+		expect(stagingAuthorization('production', credentials)).toBeUndefined();
+		for (const invalid of [
+			'',
+			':unique-test-secret',
+			'reviewer:',
+			'unique-test-secret',
+			'user:secret\n',
+			'user:' + 'x'.repeat(2048),
+		]) {
+			let message;
+			try {
+				stagingAuthorization('staging', invalid);
+			} catch (error) {
+				message = error.message;
+			}
+			expect(message).toMatch(/STAGING_BASIC_AUTH/);
+			if (invalid) expect(message).not.toContain(invalid);
+		}
+	});
+
+	it('passes authorization over stdin, disables curlrc, and refuses redirects and header injection', () => {
+		const directory = path.dirname(fixture().source);
+		const run = (program, args, options) => {
+			expect(program).toBe('curl');
+			expect(args[0]).toBe('--disable');
+			expect(args).toContain('=https');
+			expect(args).not.toContain('--location');
+			expect(args.join(' ')).not.toContain(authorization);
+			expect(options.input).toBe(
+				`header = "Authorization: ${authorization}"\n`,
+			);
+			fs.writeFileSync(
+				path.join(directory, 'headers'),
+				'HTTP/2 200\r\ncontent-type: text/plain\r\n\r\n',
+			);
+			fs.writeFileSync(path.join(directory, 'body'), 'ok');
+			return '200';
+		};
+		expect(
+			request(
+				'https://staging.example.com/',
+				directory,
+				authorization,
+				run,
+			).status,
+		).toBe(200);
+		expect(() =>
+			request(
+				'https://staging.example.com/',
+				directory,
+				'Basic bad\nurl = "https://other.example.com"',
+				run,
+			),
+		).toThrow('Invalid Basic');
+	});
+
+	function verificationFixture(
+		environment = 'staging',
+		override = () => undefined,
+	) {
+		const { source, destination } = fixture();
+		const manifest = packageRelease(
+			source,
+			destination,
+			releaseId,
+			commit,
+			createdAt,
+		);
+		const cfg = {
+			environment,
+			authorization,
+			url: 'https://staging.example.com',
+			bucket: 'example-bucket',
+			region: 'us-east-1',
+		};
+		const calls = [];
+		const fetch = (url, _directory, auth) => {
+			calls.push({ url, auth });
+			const replaced = override(url, auth);
+			if (replaced) return replaced;
+			if (url.includes('.s3.')) return { status: 403 };
+			if (environment === 'staging' && auth !== authorization)
+				return {
+					status: 401,
+					headers: {
+						'www-authenticate':
+							'Basic realm="Staging", charset="UTF-8"',
+						'cache-control': 'private, no-store',
+						'x-robots-tag': 'noindex',
+					},
+				};
+			let filename = new URL(url).pathname
+				.replace(/^\//, '')
+				.replace(/\/$/, '');
+			if (!filename) filename = 'index.html';
+			else if (['about', 'faq', 'privacy-policy'].includes(filename))
+				filename += '/index.html';
+			const file = manifest.files.find((item) => item.path === filename);
+			if (!file) return { status: 404 };
+			return {
+				status: 200,
+				body: fs.readFileSync(path.join(source, filename)),
+				headers: {
+					'content-type': file.contentType,
+					'cache-control':
+						environment === 'staging'
+							? 'private, no-store'
+							: file.cacheControl,
+					...(environment === 'staging'
+						? { 'x-robots-tag': 'noindex' }
+						: {}),
+				},
+			};
+		};
+		return { cfg, manifest, fetch, calls };
+	}
+
+	it('checks anonymous and incorrect credentials after every authorized file/route, without sending credentials to S3', () => {
+		const { cfg, manifest, fetch, calls } = verificationFixture();
+		const evidence = verifyPublished(cfg, manifest, '', fetch);
+		for (const item of evidence) {
+			expect(item.anonymousStatus).toBe(401);
+			expect(item.incorrectCredentialsStatus).toBe(401);
+			const index = calls.findIndex(
+				(call) => call.url === cfg.url + item.path,
+			);
+			expect(calls[index].auth).toBe(authorization);
+			expect(calls[index + 1].auth).toBeUndefined();
+			expect(calls[index + 2].auth).not.toBe(authorization);
+		}
+		expect(calls.at(-1).url).toContain('.s3.');
+		expect(calls.at(-1).auth).toBeUndefined();
+		expect(JSON.stringify(evidence)).not.toContain(authorization);
+	});
+
+	it('fails verification if a warmed asset becomes accessible without credentials', () => {
+		const { cfg, manifest, fetch } = verificationFixture(
+			'staging',
+			(url, auth) =>
+				url.includes('/assets/') && !auth ? { status: 200 } : undefined,
+		);
+		expect(() => verifyPublished(cfg, manifest, '', fetch)).toThrow(
+			'unauthorized access must fail',
+		);
+	});
+
+	it('keeps production verification anonymous even if credentials were supplied', () => {
+		const { cfg, manifest, fetch, calls } =
+			verificationFixture('production');
+		verifyPublished(cfg, manifest, '', fetch);
+		expect(calls.every((call) => call.auth === undefined)).toBe(true);
+	});
+
+	it('rejects missing staging noindex and accidental production noindex without weakening byte checks', () => {
+		const body = Buffer.from('page');
+		const file = {
+			path: 'index.html',
+			size: body.length,
+			sha256: sha256(body),
+			...fileMetadata('index.html'),
+		};
+		const response = {
+			status: 200,
+			body,
+			headers: {
+				'content-type': file.contentType,
+				'cache-control': 'private, no-store',
+				'x-robots-tag': 'noindex',
+			},
+		};
+		expect(() => verifyResponse(response, file, 'staging')).not.toThrow();
+		expect(() =>
+			verifyResponse(
+				{ ...response, body: Buffer.from('evil') },
+				file,
+				'staging',
+			),
+		).toThrow('contents');
+		delete response.headers['x-robots-tag'];
+		expect(() => verifyResponse(response, file, 'staging')).toThrow(
+			'indexing',
+		);
+		response.headers['cache-control'] = file.cacheControl;
+		response.headers['x-robots-tag'] = 'noindex';
+		expect(() => verifyResponse(response, file, 'production')).toThrow(
+			'production must remain indexable',
+		);
+	});
+});
 
 it('parses checksum options and refuses misspelled, duplicate or misplaced flags', () => {
 	expect(
