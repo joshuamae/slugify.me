@@ -855,13 +855,16 @@ migration and rollback window.
 
 Public DNS lookups cannot enumerate every record in a zone. Use the provider's
 complete inventory. The template manages apex/`www` website records and one
-optional Google TXT token; copy any other records separately. Do not overwrite
-Route 53's generated NS and SOA records with the old provider's values.
+optional Google TXT token; copy any other records using the required inventory
+step below. Do not overwrite Route 53's generated apex NS and SOA records with
+the old provider's values. Preserve NS and DS records for delegated subdomains.
 
 A third-party apex ALIAS cannot be copied directly into a Route 53 alias pointing
 to a non-AWS host. `PreviousIpv4Addresses` stores the verified previous website
 IPv4 addresses as ordinary A records for the migration and rollback period.
 Confirm these addresses remain valid with the previous host before rollback.
+Each address must have four octets from 0 to 255 without leading zeros; invalid
+addresses are rejected during CloudFormation parameter validation.
 
 Set the following values from your inventory and production stack:
 
@@ -920,6 +923,81 @@ Expected result: the new zone contains the previous website targets and existing
 verification token. The registrar still points at the old DNS provider, so live
 website traffic is unchanged. Query each new authoritative nameserver directly
 with `dig @NAMESERVER example.com A` and compare its records with the inventory.
+
+##### Copy and verify the remaining DNS inventory
+
+Complete this step before certificate setup or nameserver delegation. If the
+inventory contains only the website records and the optional Google TXT record,
+confirm that each is present and skip the import command.
+
+Otherwise, create a JSON change batch outside the repository containing every
+remaining record set. Use the [Route 53 CLI record formats](https://docs.aws.amazon.com/cli/latest/reference/route53/change-resource-record-sets.html)
+to translate the provider's export; its raw export is not necessarily a valid
+change batch. The following example shows the structure for MX and TXT records.
+Replace the example records with the complete inventory before running it:
+
+```json
+{
+  "Comment": "Preserve existing non-website DNS records before delegation",
+  "Changes": [
+    {
+      "Action": "CREATE",
+      "ResourceRecordSet": {
+        "Name": "example.com.",
+        "Type": "MX",
+        "TTL": 600,
+        "ResourceRecords": [{ "Value": "10 mail.example.com." }]
+      }
+    },
+    {
+      "Action": "CREATE",
+      "ResourceRecordSet": {
+        "Name": "_verification.example.com.",
+        "Type": "TXT",
+        "TTL": 600,
+        "ResourceRecords": [{ "Value": "\"EXISTING_VERIFICATION_VALUE\"" }]
+      }
+    }
+  ]
+}
+```
+
+Preserve each name, type, TTL, value, and MX/SRV priority. Include all service
+A/AAAA, CNAME, TXT, MX, CAA, SRV, and delegated-subdomain records from the
+inventory. Group values with the same name and type in one `ResourceRecords`
+array. Exclude the stack-managed website and Google TXT records, generated apex
+NS/SOA records, and certificate validation records already present in the zone.
+
+If additional values share a record set managed by CloudFormation, such as an
+apex SPF TXT value alongside the Google TXT value, extend that template resource
+to contain every value and apply a reviewed stack update instead. Do not modify
+stack-managed record sets through the import command.
+
+Review the complete batch, then apply it to the new zone:
+
+```sh
+export SITE_DNS_IMPORT_FILE="$HOME/dns-backup/additional-records.json"
+
+SITE_DNS_CHANGE_ID="$(aws route53 change-resource-record-sets \
+  --hosted-zone-id "$SITE_ZONE_ID" \
+  --change-batch "file://$SITE_DNS_IMPORT_FILE" \
+  --query ChangeInfo.Id --output text)" &&
+aws route53 wait resource-record-sets-changed --id "$SITE_DNS_CHANGE_ID"
+
+aws route53 list-resource-record-sets --hosted-zone-id "$SITE_ZONE_ID"
+```
+
+`CREATE` refuses to overwrite existing record sets. If it reports a duplicate,
+compare the existing values with the inventory before correcting the batch;
+do not switch blindly to `UPSERT`. Imported records remain managed separately
+from this CloudFormation stack. Keep their backup and change history.
+
+Expected result: every source record is accounted for in the new zone, apart
+from the intentionally replaced apex NS/SOA and translated website ALIAS.
+Compare the full record listing and query all four new authoritative nameservers
+for each migrated name and type. Stop before delegation if any record is missing
+or differs unexpectedly. A successful stack update alone does not verify the
+complete inventory.
 
 #### 3. Validate the certificate before cutover
 
@@ -1014,7 +1092,7 @@ custom domain, while `CloudFrontUrl` remains available for these pre-cutover che
 
 #### 5. Move DNS hosting, then website traffic
 
-1. Verify the entire Route 53 record inventory, including the ACM CNAMEs
+1. Complete **Copy and verify the remaining DNS inventory**, wait for imported changes to reach `INSYNC`, and verify the entire zone including ACM CNAMEs before continuing
 2. Follow the DNSSEC steps in [AWS's migration procedure](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/migrate-dns-domain-in-use.html) if a DS record exists at the parent zone
 3. At the registrar, replace the old nameservers with all four nameservers from the new hosted zone
 4. Keep the old provider's zone intact while cached delegations expire
