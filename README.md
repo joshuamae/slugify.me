@@ -161,9 +161,10 @@ together as a **stack**. Use separate stacks for staging and production.
 - **CloudFront** — Public HTTPS delivery of those files
 - **OIDC** — A way for GitHub to obtain temporary AWS deployment credentials
 
-The template prepares hosting resources and a GitHub deployment role. Uploading
-the website and adding the deployment workflow are subsequent steps. Each stack
-uses a generated CloudFront address; custom domains and a production cutover are
+The template prepares hosting resources and a GitHub deployment role. Steps 8–9
+below publish and verify a staging release manually; a GitHub Actions deployment
+workflow is a subsequent step. Each stack uses a generated CloudFront address;
+custom domains and a production cutover are
 separate changes. The current Netlify configuration remains the existing hosting
 setup until a cutover is completed.
 
@@ -179,6 +180,7 @@ Run commands from the repository root in Bash or Zsh. You need:
 - AWS CLI installed and signed in
 - AWS permissions to create the S3, CloudFront, and IAM resources in the template
 - Node.js 24 and npm for building the website
+- `curl`, `tar`, and `shasum` available in the terminal
 - Your GitHub repository name in `OWNER/REPOSITORY` format
 
 Confirm AWS access:
@@ -350,9 +352,205 @@ Expected result: the generated website appears in `build/client/`. The publishin
 step must upload that directory into the bucket's `site/` prefix. A **prefix**
 is the beginning of an S3 object's name, used here like a folder.
 
+### 8. Save and upload a staging release
+
+Run this block from the repository root after a successful build. It targets
+`static-site-staging` explicitly and reads the bucket, distribution, and website
+address from that stack. Use the same checkout that produced the build; commit
+source changes before building so the release's commit identifier describes its
+contents.
+
+The commands save a compressed copy of the build and a checksum under a unique
+`releases/` prefix, upload assets before HTML, and then refresh CloudFront. An
+**invalidation** asks CloudFront to remove cached responses so subsequent requests
+can fetch the uploaded files. It does not clear visitors' browser caches. See
+[CloudFront invalidation behavior](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/Invalidation.html).
+
+```sh
+(
+  set -e
+  export AWS_REGION="us-east-1"
+  export AWS_DEFAULT_REGION="$AWS_REGION"
+  export AWS_PAGER=""
+
+  stack_output() {
+    aws cloudformation describe-stacks \
+      --stack-name static-site-staging \
+      --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue | [0]" \
+      --output text
+  }
+
+  SITE_BUCKET="$(stack_output BucketName)"
+  SITE_DISTRIBUTION="$(stack_output DistributionId)"
+  SITE_URL="$(stack_output SiteUrl)"
+
+  test -s build/client/index.html
+
+  SITE_RELEASE_ID="$(git rev-parse --short=12 HEAD)-$(date -u +%Y%m%dT%H%M%SZ)"
+  SITE_RELEASE_DIR="$(mktemp -d)"
+
+  tar -czf "$SITE_RELEASE_DIR/site.tar.gz" -C build/client .
+
+  (
+    cd "$SITE_RELEASE_DIR"
+    shasum -a 256 site.tar.gz > SHA256SUMS
+  )
+
+  aws s3 cp "$SITE_RELEASE_DIR/" \
+    "s3://$SITE_BUCKET/releases/$SITE_RELEASE_ID/" \
+    --recursive \
+    --only-show-errors
+
+  aws s3 cp build/client/assets/ \
+    "s3://$SITE_BUCKET/site/assets/" \
+    --recursive \
+    --cache-control "public,max-age=31536000,immutable" \
+    --only-show-errors
+
+  aws s3 cp build/client/ \
+    "s3://$SITE_BUCKET/site/" \
+    --recursive \
+    --exclude "assets/*" \
+    --exclude ".vite/*" \
+    --exclude "*.html" \
+    --cache-control "no-cache,max-age=0,must-revalidate" \
+    --only-show-errors
+
+  aws s3 cp build/client/ \
+    "s3://$SITE_BUCKET/site/" \
+    --recursive \
+    --exclude "*" \
+    --include "*.html" \
+    --content-type "text/html; charset=utf-8" \
+    --cache-control "no-cache,max-age=0,must-revalidate" \
+    --only-show-errors
+
+  SITE_INVALIDATION="$(
+    aws cloudfront create-invalidation \
+      --distribution-id "$SITE_DISTRIBUTION" \
+      --paths "/*" \
+      --query Invalidation.Id \
+      --output text
+  )"
+
+  printf 'CloudFront invalidation: %s\n' "$SITE_INVALIDATION"
+
+  aws cloudfront wait invalidation-completed \
+    --distribution-id "$SITE_DISTRIBUTION" \
+    --id "$SITE_INVALIDATION"
+
+  printf '\nRelease saved: %s\nWebsite: %s\n' \
+    "$SITE_RELEASE_ID" "$SITE_URL"
+)
+```
+
+The outer parentheses keep temporary settings in a separate shell, and `set -e`
+stops that shell if a command fails. The terminal may remain quiet during uploads
+and the CloudFront wait.
+
+Expected result: the command prints the release ID and website address after the
+invalidation completes. Save the release ID, and mark it successful only after
+step 9 passes. If a command fails, inspect its error before retrying; an archive
+can exist even if publishing failed. If only the invalidation waiter times out,
+check that invalidation with `aws cloudfront get-invalidation` using the printed
+ID and the stack's distribution ID before uploading again.
+
+All uploads are scoped to the selected bucket's `site/` and `releases/` prefixes,
+and the invalidation targets only its CloudFront distribution. These commands do
+not delete previous assets. HTML files are replaced individually, so this is not
+an atomic switch across every page. The archives provide the inputs for a later
+rollback procedure; saving an archive alone does not verify recovery.
+
+### 9. Verify staging
+
+Run the following block from the same checkout used to build the release. It
+reads current stack outputs, checks all four pages, samples a generated JavaScript
+and CSS file, and checks public access. Use your operator AWS identity for these
+checks; the GitHub deployment role does not grant bucket-policy inspection.
+
+```sh
+(
+  set -e
+  export AWS_REGION="us-east-1"
+  export AWS_DEFAULT_REGION="$AWS_REGION"
+  export AWS_PAGER=""
+
+  stack_output() {
+    aws cloudformation describe-stacks \
+      --stack-name static-site-staging \
+      --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue | [0]" \
+      --output text
+  }
+
+  SITE_BUCKET="$(stack_output BucketName)"
+  SITE_URL="$(stack_output SiteUrl)"
+
+  for SITE_PATH in / /about /faq /privacy-policy; do
+    curl --fail --silent --show-error --head --max-time 30 \
+      --write-out 'Checked %{url_effective}: %{http_code}\n' \
+      "$SITE_URL$SITE_PATH"
+  done
+
+  SITE_JS="$(find build/client/assets -type f -name '*.js' -print -quit)"
+  SITE_CSS="$(find build/client/assets -type f -name '*.css' -print -quit)"
+
+  for SITE_ASSET in "$SITE_JS" "$SITE_CSS"; do
+    test -n "$SITE_ASSET"
+    curl --fail --silent --show-error --head --max-time 30 \
+      --write-out 'Checked %{url_effective}: %{http_code}\n' \
+      "$SITE_URL/${SITE_ASSET#build/client/}"
+  done
+
+  curl --fail --silent --show-error --max-time 30 "$SITE_URL/robots.txt"
+  curl --fail --silent --show-error --max-time 30 "$SITE_URL/sitemap.xml"
+
+  aws s3api get-public-access-block --bucket "$SITE_BUCKET"
+  aws s3api get-bucket-policy-status --bucket "$SITE_BUCKET"
+
+  curl --silent --show-error --output /dev/null --max-time 30 \
+    --write-out 'Missing asset status: %{http_code}\n' \
+    "$SITE_URL/assets/intentionally-missing.js"
+
+  curl --silent --show-error --output /dev/null --max-time 30 \
+    --write-out 'Anonymous S3 status: %{http_code}\n' \
+    "https://$SITE_BUCKET.s3.$AWS_REGION.amazonaws.com/site/index.html"
+)
+```
+
+Compare the output with these expected results. The commands display headers and
+access settings; they do not automatically assert every value in this table.
+
+| Check | Expected result |
+| --- | --- |
+| All four page URLs | `200` with `Content-Type: text/html; charset=utf-8` |
+| HTML caching | `Cache-Control: no-cache,max-age=0,must-revalidate` |
+| Sample JavaScript and CSS | `200` with appropriate JavaScript and CSS content types |
+| Hashed asset caching | `Cache-Control: public,max-age=31536000,immutable` |
+| `robots.txt` and `sitemap.xml` | Actual text and XML contents, rather than homepage HTML |
+| S3 public-access blocks | All four values `true` |
+| S3 policy status | `IsPublic: false` |
+| Missing asset | `403` or `404`, rather than successful HTML |
+| Anonymous direct S3 request | `403` |
+
+A missing S3 object can return `403` when the requesting identity lacks permission
+to list the bucket. That result is expected for this CloudFront configuration.
+See [S3 object access permissions](https://docs.aws.amazon.com/AmazonS3/latest/API/API_GetObject.html).
+The sitemap retains the application's configured production URLs.
+
+Finish with a browser check:
+
+1. Open the website address printed by the upload command
+2. In **Text to slugify**, enter `Hello, World!` and confirm **Generated slug** shows `hello-world`
+3. Append ` Again` and confirm the result immediately changes to `hello-world-again`
+4. Press Tab to focus **Copy generated slug**, then Enter, and confirm the copy-success message appears
+5. Open **About**, **FAQ**, and **Privacy Policy**, refreshing each page to verify direct loading
+
+Keep the release ID, verification time, and results with your deployment notes.
+HTTP success alone does not prove that the browser application is working.
+
 ### File layout and caching
 
-Use this S3 layout when implementing publishing and rollback:
+The upload commands use this S3 layout:
 
 ```text
 site/
