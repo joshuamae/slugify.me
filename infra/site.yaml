@@ -22,6 +22,15 @@ Parameters:
         AllowedPattern: '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+'
         Description: GitHub repository in OWNER/REPOSITORY format
 
+    GitHubOidcSubjectPrefix:
+        Type: String
+        Default: ''
+        AllowedPattern: '^$|^repo:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|[A-Za-z0-9_.-]+@[0-9]+/[A-Za-z0-9_.-]+@[0-9]+)$'
+        ConstraintDescription: Use the exact repo prefix from GitHub, with both numeric IDs when present, and no environment suffix or wildcards
+        Description: >-
+            GitHub sub_claim_prefix, including immutable IDs when enabled.
+            Empty preserves legacy repo:OWNER/REPOSITORY trust for existing stacks.
+
     ExistingOidcProviderArn:
         Type: String
         Default: ''
@@ -29,6 +38,11 @@ Parameters:
         Description: Existing GitHub OIDC provider ARN, or empty to create one
 
 Conditions:
+    UseExplicitGitHubOidcSubjectPrefix: !Not
+        - !Equals
+          - !Ref GitHubOidcSubjectPrefix
+          - ''
+
     CreateOidcProvider: !Equals
         - !Ref ExistingOidcProviderArn
         - ''
@@ -234,6 +248,7 @@ Resources:
                 why: Allow GitHub to publish releases using temporary credentials
                 must:
                     - Restrict trust to the exact repository and environment
+                    - Preserve immutable owner and repository IDs in the GitHub subject prefix when enabled
                     - Keep infrastructure administration outside this role
         Properties:
             AssumeRolePolicyDocument:
@@ -249,7 +264,10 @@ Resources:
                       Condition:
                           StringEquals:
                               token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                              token.actions.githubusercontent.com:sub: !Sub 'repo:${GitHubRepository}:environment:${Environment}'
+                              token.actions.githubusercontent.com:sub: !If
+                                  - UseExplicitGitHubOidcSubjectPrefix
+                                  - !Sub '${GitHubOidcSubjectPrefix}:environment:${Environment}'
+                                  - !Sub 'repo:${GitHubRepository}:environment:${Environment}'
             Policies:
                 - PolicyName: PublishWebsite
                   PolicyDocument:
