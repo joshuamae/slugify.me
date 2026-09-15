@@ -8,16 +8,24 @@ on:
         required: true
         type: string
       release-id:
-        description: Release ID produced by the build job
+        description: Selected release ID
         required: true
+        type: string
+      source:
+        description: artifact for promotion, s3 for rollback
+        default: artifact
         type: string
       artifact-id:
-        description: Immutable GitHub artifact ID from the same workflow run
-        required: true
+        description: Immutable artifact ID from this workflow run
+        default: ""
         type: string
-      archive-sha256:
-        description: SHA-256 of site.tar.gz from the build job
-        required: true
+      manifest-sha256:
+        description: Manifest checksum from the build job
+        default: ""
+        type: string
+      recover-operation:
+        description: Exact pending operation ID, only after confirming its process stopped
+        default: ""
         type: string
 
 permissions:
@@ -37,30 +45,27 @@ jobs:
     environment:
       name: ${{ inputs.environment }}
       url: ${{ vars.SITE_URL }}
-    permissions:
-      contents: read
-      id-token: write
     env:
       AWS_REGION: ${{ vars.AWS_REGION }}
-      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
       AWS_PAGER: ""
       S3_BUCKET: ${{ vars.S3_BUCKET }}
       CLOUDFRONT_DISTRIBUTION_ID: ${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}
       SITE_URL: ${{ vars.SITE_URL }}
-      SITE_RELEASE_ID: ${{ inputs.release-id }}
       SITE_ENVIRONMENT: ${{ inputs.environment }}
+      SITE_RELEASE_ID: ${{ inputs.release-id }}
+      SITE_SOURCE: ${{ inputs.source }}
       SITE_ARTIFACT_ID: ${{ inputs.artifact-id }}
-      SITE_ARCHIVE_SHA256: ${{ inputs.archive-sha256 }}
+      SITE_MANIFEST_SHA256: ${{ inputs.manifest-sha256 }}
+      SITE_RECOVER_OPERATION: ${{ inputs.recover-operation }}
 
     steps:
       - name: Check environment settings
+        env:
+          AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
         run: |
           case "$SITE_ENVIRONMENT" in
             staging | production) ;;
-            *)
-              printf '::error::Unsupported environment: %s\n' "$SITE_ENVIRONMENT"
-              exit 1
-              ;;
+            *) printf '::error::Unsupported environment: %s\n' "$SITE_ENVIRONMENT"; exit 1 ;;
           esac
           for setting in AWS_REGION AWS_ROLE_ARN S3_BUCKET CLOUDFRONT_DISTRIBUTION_ID SITE_URL; do
             if [[ -z "${!setting}" ]]; then
@@ -68,29 +73,32 @@ jobs:
               exit 1
             fi
           done
-          [[ "$SITE_URL" == https://* ]]
-          [[ "$SITE_ARTIFACT_ID" =~ ^[0-9]+$ ]]
-          [[ "$SITE_RELEASE_ID" =~ ^[0-9a-f]{12}-[0-9]+-[0-9]+$ ]]
-          [[ "$SITE_ARCHIVE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$SITE_RELEASE_ID" =~ ^[0-9a-f]{12}-([0-9]+-[0-9]+|[0-9]{8}T[0-9]{6}Z)$ ]]
+          case "$SITE_SOURCE" in
+            artifact)
+              [[ "$SITE_ARTIFACT_ID" =~ ^[0-9]+$ ]]
+              [[ "$SITE_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
+              ;;
+            s3) ;;
+            *) printf '::error::Unsupported release source\n'; exit 1 ;;
+          esac
+
+      - name: Check out release tools
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
 
       - name: Download build artifact
+        if: inputs.source == 'artifact'
         uses: actions/download-artifact@v7
         with:
           artifact-ids: ${{ inputs.artifact-id }}
           path: ${{ runner.temp }}/release/
-
-      - name: Verify and unpack release
-        run: |
-          (cd "$RUNNER_TEMP/release" && sha256sum --check SHA256SUMS)
-          printf '%s  %s\n' "$SITE_ARCHIVE_SHA256" "$RUNNER_TEMP/release/site.tar.gz" | sha256sum --check
-          mkdir -p "$RUNNER_TEMP/site"
-          tar -xzf "$RUNNER_TEMP/release/site.tar.gz" -C "$RUNNER_TEMP/site"
-          for page in index.html about/index.html faq/index.html privacy-policy/index.html; do
-            test -s "$RUNNER_TEMP/site/$page"
-          done
-          test -d "$RUNNER_TEMP/site/assets"
-          test -s "$RUNNER_TEMP/site/robots.txt"
-          test -s "$RUNNER_TEMP/site/sitemap.xml"
 
       - name: Obtain temporary AWS credentials
         uses: aws-actions/configure-aws-credentials@v6
@@ -101,130 +109,24 @@ jobs:
           role-duration-seconds: 3600
           mask-aws-account-id: true
 
-      - name: Archive release in S3
-        id: archive
+      - name: Publish selected release and verify every file
         run: |
-          aws s3 cp "$RUNNER_TEMP/release/" \
-            "s3://$S3_BUCKET/releases/$SITE_RELEASE_ID/" \
-            --recursive --only-show-errors
-
-      - name: Upload assets before HTML
-        run: |
-          aws s3 cp "$RUNNER_TEMP/site/assets/" \
-            "s3://$S3_BUCKET/site/assets/" \
-            --recursive \
-            --cache-control "public,max-age=31536000,immutable" \
-            --only-show-errors
-
-          aws s3 cp "$RUNNER_TEMP/site/" \
-            "s3://$S3_BUCKET/site/" \
-            --recursive \
-            --exclude "assets/*" --exclude ".vite/*" --exclude "*.html" \
-            --cache-control "no-cache,max-age=0,must-revalidate" \
-            --only-show-errors
-
-          aws s3 cp "$RUNNER_TEMP/site/" \
-            "s3://$S3_BUCKET/site/" \
-            --recursive \
-            --exclude "*" --include "*.html" \
-            --content-type "text/html; charset=utf-8" \
-            --cache-control "no-cache,max-age=0,must-revalidate" \
-            --only-show-errors
-
-      - name: Refresh CloudFront
-        id: invalidate
-        run: |
-          SITE_INVALIDATION="$(aws cloudfront create-invalidation \
-            --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
-            --paths "/*" --query Invalidation.Id --output text)"
-          printf 'invalidation-id=%s\n' "$SITE_INVALIDATION" >> "$GITHUB_OUTPUT"
-          printf 'CloudFront invalidation: %s\n' "$SITE_INVALIDATION"
-          aws cloudfront wait invalidation-completed \
-            --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
-            --id "$SITE_INVALIDATION"
-
-      - name: Verify published files and caching
-        id: verify
-        run: |
-          SITE_URL="${SITE_URL%/}"
-          SITE_CHECK_DIR="$(mktemp -d)"
-          trap 'rm -rf "$SITE_CHECK_DIR"' EXIT
-
-          check_file() {
-            local path="$1" file="$2" content_type="$3" cache_control="$4" status
-            printf 'Checking %s\n' "$path"
-            status="$(curl --compressed --fail --silent --show-error \
-              --retry 3 --max-time 30 \
-              --dump-header "$SITE_CHECK_DIR/headers" \
-              --output "$SITE_CHECK_DIR/body" --write-out '%{http_code}' \
-              "$SITE_URL$path")"
-            test "$status" = 200
-            tr -d '\r' < "$SITE_CHECK_DIR/headers" > "$SITE_CHECK_DIR/normalized-headers"
-            grep -Eiq "^content-type: ($content_type)(;.*)?$" "$SITE_CHECK_DIR/normalized-headers"
-            grep -Fiqx "cache-control: $cache_control" "$SITE_CHECK_DIR/normalized-headers"
-            cmp "$file" "$SITE_CHECK_DIR/body"
-            printf 'Verified %s: status, content type, caching, and release contents\n' "$path"
-          }
-
-          for path in / /about /faq /privacy-policy; do
-            if [[ "$path" == / ]]; then
-              file="$RUNNER_TEMP/site/index.html"
-            else
-              file="$RUNNER_TEMP/site$path/index.html"
-            fi
-            check_file "$path" "$file" 'text/html' 'no-cache,max-age=0,must-revalidate'
-          done
-
-          for extension in js css; do
-            asset="$(find "$RUNNER_TEMP/site/assets" -type f -name "*.$extension" -print -quit)"
-            test -n "$asset"
-            content_type='text/css'
-            if [[ "$extension" == js ]]; then
-              content_type='text/javascript|application/javascript'
-            fi
-            check_file "/${asset#"$RUNNER_TEMP/site/"}" "$asset" "$content_type" \
-              'public,max-age=31536000,immutable'
-          done
-
-          check_file /robots.txt "$RUNNER_TEMP/site/robots.txt" 'text/plain' \
-            'no-cache,max-age=0,must-revalidate'
-          check_file /sitemap.xml "$RUNNER_TEMP/site/sitemap.xml" 'application/xml|text/xml' \
-            'no-cache,max-age=0,must-revalidate'
-
-          printf 'Checking missing asset denial\n'
-          status="$(curl --silent --show-error --max-time 30 --output /dev/null \
-            --write-out '%{http_code}' "$SITE_URL/assets/missing-$SITE_RELEASE_ID.js")"
-          if [[ "$status" != 403 && "$status" != 404 ]]; then
-            printf '::error::Missing asset returned %s; expected 403 or 404\n' "$status"
-            exit 1
+          arguments=(--release-id "$SITE_RELEASE_ID" --output "$RUNNER_TEMP/release-verification.json")
+          if [[ -n "$SITE_RECOVER_OPERATION" ]]; then
+            arguments+=(--recover-operation "$SITE_RECOVER_OPERATION")
+          fi
+          if [[ "$SITE_SOURCE" == artifact ]]; then
+            node scripts/site-release.mjs publish "${arguments[@]}" \
+              --directory "$RUNNER_TEMP/release" --manifest-sha256 "$SITE_MANIFEST_SHA256"
+          else
+            node scripts/site-release.mjs rollback "${arguments[@]}"
           fi
 
-          printf 'Checking anonymous S3 denial\n'
-          status="$(curl --silent --show-error --max-time 30 --output /dev/null \
-            --write-out '%{http_code}' \
-            "https://$S3_BUCKET.s3.$AWS_REGION.amazonaws.com/site/index.html")"
-          if [[ "$status" != 403 ]]; then
-            printf '::error::Anonymous S3 request returned %s; expected 403\n' "$status"
-            exit 1
-          fi
-
-      - name: Write deployment summary
+      - name: Save HTTP verification evidence
         if: always()
-        env:
-          ARCHIVE_OUTCOME: ${{ steps.archive.outcome }}
-          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
-          INVALIDATION_ID: ${{ steps.invalidate.outputs.invalidation-id }}
-        run: |
-          {
-            printf '## %s deployment\n\n' "$SITE_ENVIRONMENT"
-            printf -- '- Release: `%s`\n' "$SITE_RELEASE_ID"
-            printf -- '- Artifact ID: `%s`\n' "$SITE_ARTIFACT_ID"
-            printf -- '- Archive SHA-256: `%s`\n' "$SITE_ARCHIVE_SHA256"
-            printf -- '- Commit: `%s`\n' "$GITHUB_SHA"
-            printf -- '- Website: %s\n' "$SITE_URL"
-            printf -- '- S3 archive upload: %s\n' "$ARCHIVE_OUTCOME"
-            printf -- '- Archive prefix: `releases/%s/`\n' "$SITE_RELEASE_ID"
-            printf -- '- CloudFront invalidation: `%s`\n' "$INVALIDATION_ID"
-            printf -- '- HTTP verification: %s\n' "$VERIFY_OUTCOME"
-            printf '\nComplete the README browser checks before marking the release successful.\n'
-          } >> "$GITHUB_STEP_SUMMARY"
+        uses: actions/upload-artifact@v7
+        with:
+          name: verification-${{ inputs.environment }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/release-verification.json
+          if-no-files-found: ignore
+          retention-days: 30

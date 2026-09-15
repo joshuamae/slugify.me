@@ -383,24 +383,23 @@ is the beginning of an S3 object's name, used here like a folder.
 
 ### 8. Save and upload a staging release
 
-Run this block from the repository root after a successful build. It targets
-`static-site-staging` explicitly and reads the bucket, distribution, and website
-address from that stack. Use the same checkout that produced the build; commit
-source changes before building so the release's commit identifier describes its
-contents.
+Use Node.js 24 and the AWS CLI from the repository root. Build from a committed
+checkout so the manifest's full commit SHA identifies the source. For an existing
+site, first [register and adopt its current release](#register-an-existing-release)
+so the first new deployment can record the previous release.
 
-The commands save a compressed copy of the build and a checksum under a unique
-`releases/` prefix, upload assets before HTML, and then refresh CloudFront. An
-**invalidation** asks CloudFront to remove cached responses so subsequent requests
-can fetch the uploaded files. It does not clear visitors' browser caches. See
-[CloudFront invalidation behavior](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/Invalidation.html).
+The release tool packages the build, records each file's checksum and HTTP
+metadata, archives it without overwriting an existing release, uploads assets
+before HTML, invalidates CloudFront, and verifies every file before recording
+success. An **invalidation** removes CloudFront's cached responses; it does not
+clear visitors' browser caches.
 
 ```sh
 (
   set -e
   export AWS_REGION="us-east-1"
-  export AWS_DEFAULT_REGION="$AWS_REGION"
   export AWS_PAGER=""
+  export SITE_ENVIRONMENT="staging"
 
   stack_output() {
     aws cloudformation describe-stacks \
@@ -409,88 +408,39 @@ can fetch the uploaded files. It does not clear visitors' browser caches. See
       --output text
   }
 
-  SITE_BUCKET="$(stack_output BucketName)"
-  SITE_DISTRIBUTION="$(stack_output DistributionId)"
-  SITE_URL="$(stack_output SiteUrl)"
-
-  test -s build/client/index.html
-
+  export S3_BUCKET="$(stack_output BucketName)"
+  export CLOUDFRONT_DISTRIBUTION_ID="$(stack_output DistributionId)"
+  export SITE_URL="$(stack_output SiteUrl)"
   SITE_RELEASE_ID="$(git rev-parse --short=12 HEAD)-$(date -u +%Y%m%dT%H%M%SZ)"
   SITE_RELEASE_DIR="$(mktemp -d)"
   trap 'rm -rf -- "$SITE_RELEASE_DIR"' EXIT
 
-  tar -czf "$SITE_RELEASE_DIR/site.tar.gz" -C build/client .
+  node scripts/site-release.mjs package \
+    --source build/client --directory "$SITE_RELEASE_DIR" \
+    --release-id "$SITE_RELEASE_ID" --commit-sha "$(git rev-parse HEAD)" \
+    --output "$SITE_RELEASE_DIR/info.json"
 
-  (
-    cd "$SITE_RELEASE_DIR"
-    shasum -a 256 site.tar.gz > SHA256SUMS
-  )
+  SITE_MANIFEST_SHA256="$(node -p \
+    'JSON.parse(require("node:fs").readFileSync(process.argv[1])).manifestSha256' \
+    "$SITE_RELEASE_DIR/info.json")"
 
-  aws s3 cp "$SITE_RELEASE_DIR/" \
-    "s3://$SITE_BUCKET/releases/$SITE_RELEASE_ID/" \
-    --recursive \
-    --only-show-errors
-
-  aws s3 cp build/client/assets/ \
-    "s3://$SITE_BUCKET/site/assets/" \
-    --recursive \
-    --cache-control "public,max-age=31536000,immutable" \
-    --only-show-errors
-
-  aws s3 cp build/client/ \
-    "s3://$SITE_BUCKET/site/" \
-    --recursive \
-    --exclude "assets/*" \
-    --exclude ".vite/*" \
-    --exclude "*.html" \
-    --cache-control "no-cache,max-age=0,must-revalidate" \
-    --only-show-errors
-
-  aws s3 cp build/client/ \
-    "s3://$SITE_BUCKET/site/" \
-    --recursive \
-    --exclude "*" \
-    --include "*.html" \
-    --content-type "text/html; charset=utf-8" \
-    --cache-control "no-cache,max-age=0,must-revalidate" \
-    --only-show-errors
-
-  SITE_INVALIDATION="$(
-    aws cloudfront create-invalidation \
-      --distribution-id "$SITE_DISTRIBUTION" \
-      --paths "/*" \
-      --query Invalidation.Id \
-      --output text
-  )"
-
-  printf 'CloudFront invalidation: %s\n' "$SITE_INVALIDATION"
-
-  aws cloudfront wait invalidation-completed \
-    --distribution-id "$SITE_DISTRIBUTION" \
-    --id "$SITE_INVALIDATION"
-
-  printf '\nRelease saved: %s\nWebsite: %s\n' \
-    "$SITE_RELEASE_ID" "$SITE_URL"
+  node scripts/site-release.mjs publish \
+    --directory "$SITE_RELEASE_DIR" --release-id "$SITE_RELEASE_ID" \
+    --manifest-sha256 "$SITE_MANIFEST_SHA256"
 )
 ```
 
-The outer parentheses keep temporary settings in a separate shell, and `set -e`
-stops that shell if a command fails. The `EXIT` trap removes the temporary release
-directory when that shell exits, after either success or failure. The terminal
-may remain quiet during uploads and the CloudFront wait.
+Expected result: every file passes status, MIME type, cache-header, and content
+checks. The summary records the archive and manifest hashes, full source commit,
+invalidation ID, elapsed time, and previous release. The private
+`releases/state.json` object changes only after verification succeeds. Complete
+the browser checks in step 9 as well.
 
-Expected result: the command prints the release ID and website address after the
-invalidation completes. Save the release ID, and mark it successful only after
-step 9 passes. If a command fails, inspect its error before retrying; an archive
-can exist even if publishing failed. If only the invalidation waiter times out,
-check that invalidation with `aws cloudfront get-invalidation` using the printed
-ID and the stack's distribution ID before uploading again.
-
-All uploads are scoped to the selected bucket's `site/` and `releases/` prefixes,
-and the invalidation targets only its CloudFront distribution. These commands do
-not delete previous assets. HTML files are replaced individually, so this is not
-an atomic switch across every page. The archives provide the inputs for a later
-rollback procedure; saving an archive alone does not verify recovery.
+HTML files are replaced individually, so publishing is not an atomic switch
+across all pages. If uploading or verification fails, active/previous references
+stay unchanged and the state records the failed operation. Follow the
+[application rollback procedure](#restore-a-selected-release) to restore service.
+Previous hashed assets remain available for cached pages.
 
 ### 9. Verify staging
 
@@ -592,9 +542,12 @@ site/
   assets/
 
 releases/
-  RELEASE_ID/
-    site.tar.gz
-    SHA256SUMS
+  state.json
+  v1/
+    RELEASE_ID/
+      site.tar.gz
+      SHA256SUMS
+      manifest.json
 ```
 
 CloudFront can read `site/`. It cannot read the private archives under
@@ -743,21 +696,22 @@ by the staging and production jobs; it has no standalone manual trigger.
 The run follows this sequence:
 
 1. **Check and package** runs `npm ci`, `npm run check`, and `npm run build` without AWS credentials
-2. The build packages `build/client/`, creates `SHA256SUMS`, and saves both files as one immutable GitHub artifact retained for seven days
-3. **Publish and verify staging** downloads that artifact by its numeric ID, verifies the archive against both `SHA256SUMS` and the build job's SHA-256 output, then publishes and verifies staging
+2. The build packages `build/client/`, creates `SHA256SUMS` and `manifest.json`, and saves all three files as one immutable GitHub artifact retained for seven days
+3. **Publish and verify staging** downloads that artifact by its numeric ID, verifies the manifest against the build job's SHA-256 output and the archive/files against the manifest, then publishes and verifies staging
 4. **Publish and verify production** becomes eligible only after the build and staging jobs succeed, and waits for the production environment's required reviewer
 5. After approval, production downloads the same artifact ID, verifies the same SHA-256, and publishes and verifies its contents without rebuilding
 
 Each release ID combines the first 12 characters of the commit SHA, the GitHub
 run ID, and the build attempt number. Each environment archives the package under
-`releases/RELEASE_ID/`, uploads assets before HTML with the documented cache
+`releases/v1/RELEASE_ID/`, uploads assets before HTML with explicit manifest cache
 headers, and waits for its CloudFront invalidation to finish.
 
-The shared publishing job compares all four page responses, one generated
-JavaScript file, one CSS file, `robots.txt`, and `sitemap.xml` with the packaged
-files. It checks HTTP status, content type, and cache headers, confirms a missing
-asset returns `403` or `404`, and confirms anonymous direct S3 homepage access
-returns `403`.
+The shared publishing job compares every manifest file and all four page routes,
+including trailing-slash variants, with the packaged contents. It checks HTTP
+status, content type, and cache headers, confirms missing assets and unknown
+routes return `403` or `404`, and confirms anonymous direct S3 homepage access
+returns `403`. Successful evidence is saved in state and as a GitHub artifact
+retained for 30 days.
 
 #### Approve and verify a release
 
@@ -808,7 +762,7 @@ Open the failed job and expand the first failed step before retrying.
 | OIDC or `AssumeRoleWithWebIdentity` error | Check `AWS_ROLE_ARN`, audience `sts.amazonaws.com`, exact immutable subject prefix, and the correct environment suffix |
 | S3 upload or CloudFront `AccessDenied` | Confirm bucket, distribution, and role variables all belong to the target environment's stack |
 | Missing artifact or checksum failure | Start a new run on `main`; both environments require the original verified artifact, which expires after seven days |
-| Invalidation waiter times out | Inspect the invalidation ID printed in **Refresh CloudFront** using the command below |
+| Invalidation waiter times out | Inspect the invalidation ID printed in **Publish selected release and verify every file** using the command below |
 | HTTP verification fails | Check the failing URL, headers, and contents; stale files fail the byte comparison even when the status is `200` |
 
 To inspect an invalidation, replace both placeholders with values from the
@@ -822,15 +776,241 @@ aws cloudfront get-invalidation \
   --output text
 ```
 
-Failed staging checks block production. A failure after production uploads start
-does not trigger automatic rollback: S3 replaces files individually, so a failed
-run can leave a partially updated site. Retain the failed run's details, correct
-the cause, and deploy a known-good commit through staging and approval again.
+Failed staging checks block production. A failure after uploads start can leave
+partially updated pages because S3 replaces files individually. The release tool
+records the failed operation and preserves the last verified active and previous
+release references. Use the rollback procedure below to restore a selected
+archive without rebuilding it.
 
-Previous hashed assets and release archives remain available. No lifecycle cleanup
-is configured, so include retained storage in the monthly cost review. Archives
-alone do not establish a tested rollback procedure; the rollback exercise remains
-separate work.
+### Manage releases and application rollback
+
+`scripts/site-release.mjs` uses Node.js built-ins and invokes the installed AWS
+CLI, `tar`, and `curl`. It adds no runtime or build dependency to the application.
+Deployment and rollback use the same upload order, metadata, invalidation, and
+verification code.
+
+#### Release records and integrity
+
+- `releases/v1/RELEASE_ID/site.tar.gz` — Original packaged website
+- `releases/v1/RELEASE_ID/manifest.json` — Full commit SHA, archive SHA-256, creation time, and every file's path, size, SHA-256, Content-Type, and Cache-Control
+- `releases/v1/RELEASE_ID/SHA256SUMS` — Archive checksum for operator inspection
+- `releases/state.json` — Active and previous releases, any pending operation, and the last successful HTTP verification evidence
+
+The build passes the manifest checksum and immutable GitHub artifact ID to both
+publishing jobs. Each job checks the manifest, archive, and unpacked files. S3
+uploads use `If-None-Match: *`; an identical retry is accepted after comparing the
+existing bytes, and conflicting contents fail. The bucket policy requires this
+conditional creation under `releases/v1/`. Existing legacy archives stay under
+their original prefixes.
+
+Apply the updated `infra/site.yaml` through a reviewed change set to each stack
+to enable the bucket-policy safeguard. Preserve existing stack parameters,
+including the staging-owned OIDC provider and production custom domain. New
+publishing tools work before this policy update, but policy enforcement starts
+only when the stack update completes. Administrators can still deliberately
+delete archives or change the policy; this is not regulatory Object Lock.
+
+Publishing and rollback workflows share one concurrency group, including the
+production approval wait. CLI operations also acquire a lock through a
+conditional write to `releases/state.json`. Do not run the previous publishing
+workflow alongside the new CLI during initial migration; the previous workflow
+does not use this lock.
+
+#### Configure CLI access to one environment
+
+Run from the repository root. Choose the environment explicitly and obtain all
+three destinations from the same stack:
+
+```sh
+export AWS_REGION="us-east-1"
+export AWS_PAGER=""
+export SITE_REPOSITORY="OWNER/REPOSITORY"
+export SITE_ENVIRONMENT="staging"
+export SITE_STACK="static-site-$SITE_ENVIRONMENT"
+
+site_output() {
+  aws cloudformation describe-stacks --stack-name "$SITE_STACK" \
+    --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue | [0]" \
+    --output text
+}
+
+export S3_BUCKET="$(site_output BucketName)"
+export CLOUDFRONT_DISTRIBUTION_ID="$(site_output DistributionId)"
+export SITE_URL="$(site_output SiteUrl)"
+
+node scripts/site-release.mjs state
+```
+
+Expected result: state for the selected bucket. A new installation has null
+active/previous references. An existing initialized installation shows the
+release IDs and manifest hashes needed for recovery.
+
+#### Register an existing release
+
+Archives created before this procedure have no manifest. Import the currently
+published archive and an earlier known-good archive before rehearsing rollback.
+For each archive, obtain its full commit SHA and checksum from its successful
+workflow run or saved deployment evidence. The short prefix alone is not enough
+to establish provenance. Set these values from that evidence:
+
+```sh
+export SITE_RELEASE_ID="RELEASE_ID_FROM_SUCCESSFUL_RUN"
+export SITE_COMMIT_SHA="FULL_40_CHARACTER_COMMIT_SHA"
+export SITE_ARCHIVE_SHA256="ARCHIVE_SHA256_FROM_SUCCESSFUL_RUN"
+
+node scripts/site-release.mjs import-legacy \
+  --release-id "$SITE_RELEASE_ID" --commit-sha "$SITE_COMMIT_SHA" \
+  --archive-sha256 "$SITE_ARCHIVE_SHA256"
+```
+
+This verifies the original archive checksum, records explicit metadata, and
+creates a manifest-backed copy under `releases/v1/` without rebuilding or changing
+the website. It leaves the original archive intact. Then adopt only the archive
+that currently matches the live site:
+
+```sh
+node scripts/site-release.mjs adopt --release-id "$SITE_RELEASE_ID"
+```
+
+Adoption checks every public file before initializing active state. It does not
+upload website files and refuses to replace an already initialized active
+release. If it fails, verify the selected release and current MIME/cache metadata
+before proceeding. Importing an archive does not mark it active or prove that it
+was previously deployed successfully.
+
+#### Restore a selected release
+
+For routine rollback, use the workflow after it is merged into the default
+branch. Select a known-good release that exists in the target environment's
+manifest-backed S3 archive:
+
+```sh
+gh workflow run rollback-site.yaml --repo "$SITE_REPOSITORY" --ref main \
+  -f environment=staging -f release-id=KNOWN_GOOD_RELEASE_ID
+
+gh run list --repo "$SITE_REPOSITORY" --workflow rollback-site.yaml --limit 5
+```
+
+To restore production, use `-f environment=production`. Review and approve that
+run in the protected GitHub production environment. The workflow downloads the
+archive from that environment's bucket, verifies it, restores assets before HTML,
+invalidates CloudFront, and verifies every file and all four routes. It runs no
+build or dependency installation. The same release remains available after
+GitHub's seven-day build-artifact retention expires.
+
+For an operator-led **staging** rehearsal, using the CLI environment above:
+
+Confirm no deployment is running, record the current release and baseline
+verification, and keep the original archive ready. Stop before uploading if the
+environment is not staging or an archive check fails. If restoration or HTTP
+verification fails, retain the error and restore the original known-good release
+before continuing the exercise. Production is outside the rehearsal scope.
+
+```sh
+node scripts/site-release.mjs verify \
+  --release-id CURRENT_RELEASE_ID --output "$HOME/staging-before.json"
+node scripts/site-release.mjs rollback \
+  --release-id KNOWN_GOOD_RELEASE_ID --output "$HOME/staging-rollback.json"
+node scripts/site-release.mjs state
+node scripts/site-release.mjs rollback \
+  --release-id CURRENT_RELEASE_ID --output "$HOME/staging-restored.json"
+```
+
+Expected result: successful HTTP verification, a recorded recovery duration, and
+active/previous references that reflect each successful restoration. After each
+restore, check real-time slug generation, copying, and direct loads/refreshes on
+all four pages. This is application rollback; [DNS rollback](#roll-back-website-dns)
+changes the hosting destination and is a separate operation.
+
+#### Staging rehearsal results — 2026-09-15
+
+The operator restored a previously successful archived release without rebuilding
+it, then republished the original current archive to return staging to its
+baseline. Both operations used the shared release tool.
+
+| Operation | Measured duration | Verification completed (UTC) |
+| --- | --- | --- |
+| Restore the previous release | 65 seconds | 16:36:12 |
+| Republish the original current release | 86 seconds | 16:39:36 |
+
+These durations cover the release operation from lock acquisition through upload,
+CloudFront invalidation, and HTTP verification. They exclude archive retrieval
+and extraction, GitHub queue time, and approval time; they are not a complete
+incident recovery-time measurement.
+
+- All 33 manifest files and seven page-route variants passed exact content, size, MIME type, and cache-header checks before rollback, after rollback, and after restoration
+- Missing assets and unknown routes returned errors, and anonymous direct S3 access returned `403`
+- Browser checks after both restorations passed real-time conversion, keyboard copy, and direct loads and refreshes on all four pages
+- Final release state recorded the original current release as active, the rehearsed release as previous, and no pending operation
+- Archive writes without the required condition returned `AccessDenied`; conditional attempts to recreate existing objects returned `PreconditionFailed`; identical publisher retries succeeded after byte comparison
+- The retention preview selected no archives for deletion, and no cleanup deletion was performed
+- Production received no writes; its entry object's version, ETag, and modification time matched the pre-exercise baseline
+
+The two selected archives came from different successful commits but contained
+the same website files, so this rehearsal verified archive restoration and
+metadata handling without a visible application-version change. The controlled
+failure exercise remains separate work in [#66](https://github.com/joshuamae/slugify.me/issues/66).
+GitHub execution of the new workflows and production policy/state initialization
+remain pending until the source changes are merged and production setup is
+completed. Release identities and progress are recorded in
+[#57](https://github.com/joshuamae/slugify.me/issues/57).
+
+#### Recover an interrupted operation
+
+A normal caught failure records `pending.status=failed`; the next rollback may
+recover it. A killed or timed-out process can leave a running operation ID.
+Confirm the original workflow or CLI process has stopped before taking over its
+lock. Cancel an abandoned approval-waiting run before requesting an urgent
+rollback, since both workflows share the promotion concurrency group.
+
+```sh
+node scripts/site-release.mjs state
+node scripts/site-release.mjs rollback \
+  --release-id KNOWN_GOOD_RELEASE_ID \
+  --recover-operation EXACT_PENDING_OPERATION_ID
+```
+
+The workflow exposes the same optional `recover-operation` input. A wrong ID is
+rejected. Do not clear or overwrite the state object manually; active/previous
+references and its conditional-write ETag are part of the recovery safeguards.
+
+#### Retention and cleanup
+
+Retain the active release, previous release, newest ten manifest-backed releases,
+and every release younger than 30 days. Keep original legacy archives and all
+published hashed assets. This deliberately avoids deleting files still needed
+by cached pages or a rollback; storage remains part of the monthly cost review.
+There is no blanket age-based S3 expiration rule.
+
+Preview eligible archive cleanup using an operator identity:
+
+```sh
+node scripts/site-release.mjs prune
+```
+
+The plan fails while an operation is pending or before active state is
+initialized. Review the candidates, then explicitly apply a fresh plan:
+
+```sh
+node scripts/site-release.mjs prune --apply
+```
+
+Cleanup locks release operations, rechecks active/previous protection, and deletes
+all S3 versions and delete markers only within eligible `releases/v1/RELEASE_ID/`
+archive prefixes. It never deletes `site/` assets, legacy archives, or state
+history. This is permanent deletion. The GitHub deployment role has no deletion
+permissions; operator cleanup additionally requires `s3:ListBucketVersions` and
+`s3:DeleteObjectVersion`. Do not grant these permissions to the publishing role.
+
+#### Troubleshoot cache and rollback checks
+
+- A `200` response can still contain stale content; compare its SHA-256 with the selected manifest
+- A warm CloudFront cache can hide an origin failure; complete an invalidation or use a never-requested object path before checking origin access, since this cache policy excludes query strings and a random query parameter does not bypass it
+- HTML and unversioned public files require revalidation; hashed assets use a one-year immutable cache policy
+- The script records status, MIME type, cache headers, CloudFront cache result, and content checks for every manifest file and each supported page route
+- Missing resources must return `403` or `404`; successful fallback HTML is a failure
+- A failed upload can leave mixed pages; rollback restores the selected manifest's files and retains older hashed assets
+- If a new file extension appears, define and test its MIME type in the release tool before deployment
 
 ### Move the production domain to AWS
 
@@ -1079,16 +1259,26 @@ curl --fail --show-error --silent \
 curl --show-error --silent --head \
   --connect-to "www.$SITE_DOMAIN:443:$SITE_CF_HOST:443" \
   "https://www.$SITE_DOMAIN/about?source=dns-check"
+
+curl --show-error --silent --head \
+  "https://$SITE_CF_HOST/about?source=dns-check"
 ```
 
 Verify all four routes, generated assets, robots.txt, sitemap.xml, canonical URLs,
 content types, and cache headers against the current production release. Confirm
-`www` returns a `301` to the primary domain and preserves the path and query.
+both `www` and the production CloudFront hostname return a `301` to the HTTPS
+apex domain, preserving the original path and query parameters. The apex domain
+serves the requested content without a hostname redirect. Staging keeps serving
+its CloudFront hostname because it has no configured primary domain.
 Do not use `--insecure`; a valid certificate is part of this check.
 
-Keep the GitHub production `SITE_URL` variable on its CloudFront hostname until
-the public domain reaches AWS. The site stack's `SiteUrl` output now names the
-custom domain, while `CloudFrontUrl` remains available for these pre-cutover checks.
+Pause production publishing between attaching the custom domain and completing
+DNS cutover. During that interval, use the apex hostname with `--connect-to` for
+AWS content verification; the CloudFront hostname now redirects and cannot serve
+as the publisher's verification URL. Once public DNS reaches AWS, set the GitHub
+production `SITE_URL` variable to the stack's `SiteUrl` output before resuming
+publishing. `CloudFrontUrl` identifies the connection endpoint for pre-cutover
+tests, not an alternate public website address after the domain is attached.
 
 #### 5. Move DNS hosting, then website traffic
 

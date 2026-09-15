@@ -1,0 +1,40 @@
+name: Roll back site
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to restore
+        required: true
+        default: staging
+        type: choice
+        options: [staging, production]
+      release-id:
+        description: Existing manifest-backed release ID in this environment's S3 bucket
+        required: true
+        type: string
+      recover-operation:
+        description: Leave empty unless recovering a stopped process with this exact operation ID
+        default: ""
+        type: string
+
+permissions:
+  contents: read
+
+# Match the promotion workflow so rollback cannot overlap an upload or approval.
+concurrency:
+  group: aws-staging
+  cancel-in-progress: false
+
+jobs:
+  rollback:
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/publish-site.yaml
+    with:
+      environment: ${{ inputs.environment }}
+      source: s3
+      release-id: ${{ inputs.release-id }}
+      recover-operation: ${{ inputs.recover-operation }}
