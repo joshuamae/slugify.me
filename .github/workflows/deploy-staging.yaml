@@ -1,0 +1,252 @@
+name: Deploy staging
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Keep builds and uploads in the same queue; do not interrupt an active upload.
+concurrency:
+  group: aws-staging
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  build:
+    name: Check and package
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      release-id: ${{ steps.release.outputs.release-id }}
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run checks
+        run: npm run check
+
+      - name: Build application
+        run: npm run build
+
+      - name: Package release
+        id: release
+        run: |
+          test -s build/client/index.html
+          SITE_RELEASE_ID="${GITHUB_SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          mkdir -p "$RUNNER_TEMP/release"
+          tar -czf "$RUNNER_TEMP/release/site.tar.gz" -C build/client .
+          (cd "$RUNNER_TEMP/release" && sha256sum site.tar.gz > SHA256SUMS)
+          printf 'release-id=%s\n' "$SITE_RELEASE_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Save build artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: site-${{ steps.release.outputs.release-id }}
+          path: ${{ runner.temp }}/release/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  deploy:
+    name: Publish and verify staging
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment:
+      name: staging
+      url: ${{ vars.SITE_URL }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      AWS_ROLE_ARN: ${{ vars.AWS_ROLE_ARN }}
+      AWS_PAGER: ""
+      S3_BUCKET: ${{ vars.S3_BUCKET }}
+      CLOUDFRONT_DISTRIBUTION_ID: ${{ vars.CLOUDFRONT_DISTRIBUTION_ID }}
+      SITE_URL: ${{ vars.SITE_URL }}
+      SITE_RELEASE_ID: ${{ needs.build.outputs.release-id }}
+
+    steps:
+      - name: Check environment settings
+        run: |
+          for setting in AWS_REGION AWS_ROLE_ARN S3_BUCKET CLOUDFRONT_DISTRIBUTION_ID SITE_URL; do
+            if [[ -z "${!setting}" ]]; then
+              printf '::error::Missing staging environment variable: %s\n' "$setting"
+              exit 1
+            fi
+          done
+          [[ "$SITE_URL" == https://* ]]
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v7
+        with:
+          name: site-${{ needs.build.outputs.release-id }}
+          path: ${{ runner.temp }}/release/
+
+      - name: Verify and unpack release
+        run: |
+          (cd "$RUNNER_TEMP/release" && sha256sum --check SHA256SUMS)
+          mkdir -p "$RUNNER_TEMP/site"
+          tar -xzf "$RUNNER_TEMP/release/site.tar.gz" -C "$RUNNER_TEMP/site"
+          for page in index.html about/index.html faq/index.html privacy-policy/index.html; do
+            test -s "$RUNNER_TEMP/site/$page"
+          done
+          test -d "$RUNNER_TEMP/site/assets"
+          test -s "$RUNNER_TEMP/site/robots.txt"
+          test -s "$RUNNER_TEMP/site/sitemap.xml"
+
+      - name: Obtain temporary AWS credentials
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: staging-${{ github.run_id }}-${{ github.run_attempt }}
+          role-duration-seconds: 3600
+          mask-aws-account-id: true
+
+      - name: Archive release in S3
+        id: archive
+        run: |
+          aws s3 cp "$RUNNER_TEMP/release/" \
+            "s3://$S3_BUCKET/releases/$SITE_RELEASE_ID/" \
+            --recursive --only-show-errors
+
+      - name: Upload assets before HTML
+        run: |
+          aws s3 cp "$RUNNER_TEMP/site/assets/" \
+            "s3://$S3_BUCKET/site/assets/" \
+            --recursive \
+            --cache-control "public,max-age=31536000,immutable" \
+            --only-show-errors
+
+          aws s3 cp "$RUNNER_TEMP/site/" \
+            "s3://$S3_BUCKET/site/" \
+            --recursive \
+            --exclude "assets/*" --exclude ".vite/*" --exclude "*.html" \
+            --cache-control "no-cache,max-age=0,must-revalidate" \
+            --only-show-errors
+
+          aws s3 cp "$RUNNER_TEMP/site/" \
+            "s3://$S3_BUCKET/site/" \
+            --recursive \
+            --exclude "*" --include "*.html" \
+            --content-type "text/html; charset=utf-8" \
+            --cache-control "no-cache,max-age=0,must-revalidate" \
+            --only-show-errors
+
+      - name: Refresh CloudFront
+        id: invalidate
+        run: |
+          SITE_INVALIDATION="$(aws cloudfront create-invalidation \
+            --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
+            --paths "/*" --query Invalidation.Id --output text)"
+          printf 'invalidation-id=%s\n' "$SITE_INVALIDATION" >> "$GITHUB_OUTPUT"
+          printf 'CloudFront invalidation: %s\n' "$SITE_INVALIDATION"
+          aws cloudfront wait invalidation-completed \
+            --distribution-id "$CLOUDFRONT_DISTRIBUTION_ID" \
+            --id "$SITE_INVALIDATION"
+
+      - name: Verify published files and caching
+        id: verify
+        run: |
+          SITE_URL="${SITE_URL%/}"
+          SITE_CHECK_DIR="$(mktemp -d)"
+
+          check_file() {
+            local path="$1" file="$2" content_type="$3" cache_control="$4" status
+            printf 'Checking %s\n' "$path"
+            status="$(curl --compressed --fail --silent --show-error \
+              --retry 3 --max-time 30 \
+              --dump-header "$SITE_CHECK_DIR/headers" \
+              --output "$SITE_CHECK_DIR/body" --write-out '%{http_code}' \
+              "$SITE_URL$path")"
+            test "$status" = 200
+            tr -d '\r' < "$SITE_CHECK_DIR/headers" > "$SITE_CHECK_DIR/normalized-headers"
+            grep -Eiq "^content-type: ($content_type)(;.*)?$" "$SITE_CHECK_DIR/normalized-headers"
+            grep -Fiqx "cache-control: $cache_control" "$SITE_CHECK_DIR/normalized-headers"
+            cmp "$file" "$SITE_CHECK_DIR/body"
+            printf 'Verified %s: status, content type, caching, and release contents\n' "$path"
+          }
+
+          for path in / /about /faq /privacy-policy; do
+            if [[ "$path" == / ]]; then
+              file="$RUNNER_TEMP/site/index.html"
+            else
+              file="$RUNNER_TEMP/site$path/index.html"
+            fi
+            check_file "$path" "$file" 'text/html' 'no-cache,max-age=0,must-revalidate'
+          done
+
+          for extension in js css; do
+            asset="$(find "$RUNNER_TEMP/site/assets" -type f -name "*.$extension" -print -quit)"
+            test -n "$asset"
+            content_type='text/css'
+            if [[ "$extension" == js ]]; then
+              content_type='text/javascript|application/javascript'
+            fi
+            check_file "/${asset#"$RUNNER_TEMP/site/"}" "$asset" "$content_type" \
+              'public,max-age=31536000,immutable'
+          done
+
+          check_file /robots.txt "$RUNNER_TEMP/site/robots.txt" 'text/plain' \
+            'no-cache,max-age=0,must-revalidate'
+          check_file /sitemap.xml "$RUNNER_TEMP/site/sitemap.xml" 'application/xml|text/xml' \
+            'no-cache,max-age=0,must-revalidate'
+
+          printf 'Checking missing asset denial\n'
+          status="$(curl --silent --show-error --max-time 30 --output /dev/null \
+            --write-out '%{http_code}' "$SITE_URL/assets/missing-$SITE_RELEASE_ID.js")"
+          if [[ "$status" != 403 && "$status" != 404 ]]; then
+            printf '::error::Missing asset returned %s; expected 403 or 404\n' "$status"
+            exit 1
+          fi
+
+          printf 'Checking anonymous S3 denial\n'
+          status="$(curl --silent --show-error --max-time 30 --output /dev/null \
+            --write-out '%{http_code}' \
+            "https://$S3_BUCKET.s3.$AWS_REGION.amazonaws.com/site/index.html")"
+          if [[ "$status" != 403 ]]; then
+            printf '::error::Anonymous S3 request returned %s; expected 403\n' "$status"
+            exit 1
+          fi
+
+      - name: Write deployment summary
+        if: always()
+        env:
+          ARCHIVE_OUTCOME: ${{ steps.archive.outcome }}
+          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
+          INVALIDATION_ID: ${{ steps.invalidate.outputs.invalidation-id }}
+        run: |
+          {
+            printf '## Staging deployment\n\n'
+            printf -- '- Release: `%s`\n' "$SITE_RELEASE_ID"
+            printf -- '- Commit: `%s`\n' "$GITHUB_SHA"
+            printf -- '- Website: %s\n' "$SITE_URL"
+            printf -- '- S3 archive upload: %s\n' "$ARCHIVE_OUTCOME"
+            printf -- '- Archive prefix: `releases/%s/`\n' "$SITE_RELEASE_ID"
+            printf -- '- CloudFront invalidation: `%s`\n' "$INVALIDATION_ID"
+            printf -- '- HTTP verification: %s\n' "$VERIFY_OUTCOME"
+            printf '\nComplete the README browser checks before marking the release successful.\n'
+          } >> "$GITHUB_STEP_SUMMARY"

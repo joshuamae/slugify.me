@@ -162,8 +162,9 @@ together as a **stack**. Use separate stacks for staging and production.
 - **OIDC** — A way for GitHub to obtain temporary AWS deployment credentials
 
 The template prepares hosting resources and a GitHub deployment role. Steps 8–9
-below publish and verify a staging release manually; a GitHub Actions deployment
-workflow is a subsequent step. Each stack uses a generated CloudFront address;
+below publish and verify a staging release manually. The [automatic staging
+deployment](#deploy-staging-with-github-actions) workflow handles subsequent
+releases. Each stack uses a generated CloudFront address;
 custom domains and a production cutover are
 separate changes. The current Netlify configuration remains the existing hosting
 setup until a cutover is completed.
@@ -597,8 +598,9 @@ remain errors instead of returning homepage HTML.
 
 ### GitHub deployment settings
 
-When adding the deployment workflow, create GitHub environments named `staging`
-and `production`. Add these variables to each environment using its stack outputs:
+Create a GitHub environment named `staging` for the staging workflow. Add a
+separate `production` environment when implementing production deployment. Add
+these variables to each environment using its own stack outputs:
 
 | Variable | Value |
 | --- | --- |
@@ -613,10 +615,113 @@ approval where your GitHub plan supports it. The environment restrictions enforc
 the branch policy because the AWS trust rule identifies the repository and
 environment, rather than a branch.
 
-The deployment workflow must request `id-token: write` permission and use the
-matching GitHub environment to assume the role. The role grants file publishing
-and cache invalidation permissions; infrastructure changes use the operator's
-separate AWS identity.
+The staging workflow requests `id-token: write` only in its deployment job and
+uses the `staging` GitHub environment to assume the role. The role grants file
+publishing and cache invalidation permissions; infrastructure changes use the
+operator's separate AWS identity. OIDC lets GitHub request temporary credentials
+without storing AWS access keys in GitHub. See
+[GitHub's AWS OIDC guide](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws).
+
+### Deploy staging with GitHub Actions
+
+The workflow in `.github/workflows/deploy-staging.yaml` checks and builds each
+push to `main`, including merged pull requests, then publishes that build to
+staging. It does not deploy pull requests or branches other than `main`.
+
+Before the first run:
+
+1. Create the staging stack and complete the manual verification in step 9
+2. In the GitHub repository, open **Settings**, then **Environments**, then **staging**
+3. Under **Environment variables**, confirm all five variables in the table above match the staging stack outputs
+4. Under **Deployment branches and tags**, select **Selected branches and tags** and add a branch rule for `main` only
+5. Merge the pull request containing the deployment workflow into `main`
+
+The environment name must be exactly `staging`. The AWS role's trust policy
+expects `repo:OWNER/REPOSITORY:environment:staging`. The branch rule is required
+because this identity names the environment rather than a Git branch.
+
+To watch the deployment:
+
+1. Open the repository's **Actions** tab
+2. Select **Deploy staging** and open the run for your merge commit
+3. Wait for **Check and package** and **Publish and verify staging** to succeed
+4. Open the run's summary and save its release ID, commit, and CloudFront invalidation ID
+5. Open the website link and complete the browser checks in step 9
+
+Expected result: the summary reports `success` for the S3 archive upload and HTTP
+verification, and the browser generates and copies slugs correctly.
+
+The first job runs `npm ci`, `npm run check`, and `npm run build` without AWS
+credentials. It packages `build/client/` as `site.tar.gz`, creates `SHA256SUMS`, and
+saves both as a GitHub artifact for seven days. The second job downloads that
+artifact, verifies its checksum, and obtains temporary AWS credentials. It does
+not rebuild the application.
+
+Each release ID combines the first 12 characters of the commit SHA, the GitHub
+run ID, and the build attempt number. The job saves the archive and checksum under
+`releases/RELEASE_ID/` in S3, uploads hashed assets before HTML with the headers
+listed above, and waits for the CloudFront invalidation to finish.
+
+HTTP verification compares the downloaded HTML for all four routes, one generated
+JavaScript file, one CSS file, `robots.txt`, and `sitemap.xml` with the packaged
+files. It also checks their status, content type, and cache headers, confirms a
+missing asset returns `403` or `404`, and confirms anonymous direct S3 access to
+the homepage returns `403`. Bucket-policy inspection and browser interaction
+remain the manual checks in step 9.
+
+The `aws-staging` concurrency group allows one active workflow run at a time.
+New runs do not cancel an active deployment. GitHub may replace a pending run
+with a newer pending run, and does not guarantee queue order. Do not run manual
+S3 uploads while an automated deployment is active; terminal uploads do not use
+this queue. See [GitHub workflow concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+
+To deploy the current `main` branch again, open **Actions**, select **Deploy
+staging**, choose **Run workflow**, select `main`, and choose **Run workflow**.
+From the repository root, the equivalent CLI command is:
+
+```sh
+gh workflow run deploy-staging.yaml \
+  --repo "$(gh repo view --json nameWithOwner --jq .nameWithOwner)" \
+  --ref main
+```
+
+**Re-run jobs** uses the original run's commit. Re-running an older successful run
+can replace the current staging site with older content. A new **Run workflow**
+on `main` builds the current branch instead. These actions become available after
+the workflow is merged into the default branch.
+
+### Troubleshoot automated staging deployment
+
+Open the failed job and expand the first failed step before retrying.
+
+| Symptom | What to check |
+| --- | --- |
+| Missing staging environment variable | Add the named value under the `staging` environment's **Environment variables**, using the stack outputs |
+| Branch deployment rejected | Select `main` for manual runs and check the environment's branch rule |
+| OIDC or `AssumeRoleWithWebIdentity` error | Check `AWS_ROLE_ARN`, the exact repository and `staging` environment in the role's trust policy, and the `sts.amazonaws.com` audience |
+| S3 upload or CloudFront `AccessDenied` | Check that the bucket, distribution, and role variables all come from the same staging stack |
+| Missing artifact or checksum failure | Start a new run on `main`; deployment requires the original verified artifact, and GitHub artifacts expire after seven days |
+| Invalidation waiter times out | Use the invalidation ID printed in **Refresh CloudFront** to inspect its status with the command below |
+| HTTP verification fails | Check the failing URL, response headers, and content; a `200` response alone is insufficient, and stale content fails the file comparison |
+
+To inspect an invalidation, replace the placeholders with the staging distribution
+ID and the invalidation ID from the run:
+
+```sh
+aws cloudfront get-invalidation \
+  --distribution-id DISTRIBUTION_ID \
+  --id INVALIDATION_ID \
+  --query 'Invalidation.Status' \
+  --output text
+```
+
+A failed upload or verification does not trigger automatic rollback. S3 uploads
+replace files individually, so a failed run may leave a partially updated site.
+Retain the failed run's details, correct the cause, and deploy a known-good commit.
+Previous hashed assets and S3 release archives remain available; no lifecycle
+cleanup is configured, so include retained storage in the monthly cost review.
+Saving an archive does not establish a tested rollback procedure. Production
+promotion and a rollback exercise remain separate work.
 
 ### Create production after staging works
 
