@@ -179,6 +179,7 @@ budgets. Budget notifications do not automatically stop AWS charges.
 Run commands from the repository root in Bash or Zsh. You need:
 
 - AWS CLI installed and signed in
+- GitHub CLI (`gh`) installed and signed in with access to the repository's OIDC settings
 - AWS permissions to create the S3, CloudFront, and IAM resources in the template
 - Node.js 24 and npm for building the website
 - `curl`, `tar`, and `shasum` available in the terminal
@@ -208,6 +209,31 @@ export SITE_STACK="static-site-staging"
 ```
 
 These settings apply to the current terminal session. Start with staging.
+
+Read the repository's OIDC identity prefix from GitHub. This is the beginning of
+the identity string GitHub sends to AWS, before the environment name:
+
+```sh
+SITE_OIDC_SUBJECT_PREFIX="$(
+  gh api "repos/$SITE_REPOSITORY/actions/oidc/customization/sub" \
+    --jq 'if .use_default == true and (.sub_claim_prefix | type) == "string" and (.sub_claim_prefix | length) > 0 then .sub_claim_prefix else error("Expected a default OIDC subject with a nonempty sub_claim_prefix; review repository OIDC settings") end'
+)" && export SITE_OIDC_SUBJECT_PREFIX
+```
+
+Stop if this command fails. Expected result: `SITE_OIDC_SUBJECT_PREFIX` contains
+either `repo:OWNER/REPOSITORY` or
+`repo:OWNER@OWNER_ID/REPOSITORY@REPOSITORY_ID`. Display it to confirm:
+
+```sh
+printf '%s\n' "$SITE_OIDC_SUBJECT_PREFIX"
+```
+
+Repositories created after July 15, 2026, and repositories that opted in to
+immutable subjects include numeric owner and repository IDs. Preserve the exact
+returned prefix, including both IDs; do not reconstruct it from repository names.
+The template appends `:environment:staging` or `:environment:production` and
+requires an exact match. Custom subject templates need separate review because
+their format can differ. See [GitHub's OIDC reference](https://docs.github.com/en/actions/reference/security/oidc).
 
 ### 2. Find an existing GitHub identity provider
 
@@ -269,6 +295,7 @@ aws cloudformation deploy \
   --parameter-overrides \
     Environment="$SITE_ENVIRONMENT" \
     GitHubRepository="$SITE_REPOSITORY" \
+    GitHubOidcSubjectPrefix="${SITE_OIDC_SUBJECT_PREFIX:?Read the GitHub OIDC prefix before continuing}" \
     ExistingOidcProviderArn="$SITE_OIDC_ARN" \
   --no-execute-changeset
 ```
@@ -389,6 +416,7 @@ can fetch the uploaded files. It does not clear visitors' browser caches. See
 
   SITE_RELEASE_ID="$(git rev-parse --short=12 HEAD)-$(date -u +%Y%m%dT%H%M%SZ)"
   SITE_RELEASE_DIR="$(mktemp -d)"
+  trap 'rm -rf -- "$SITE_RELEASE_DIR"' EXIT
 
   tar -czf "$SITE_RELEASE_DIR/site.tar.gz" -C build/client .
 
@@ -446,8 +474,9 @@ can fetch the uploaded files. It does not clear visitors' browser caches. See
 ```
 
 The outer parentheses keep temporary settings in a separate shell, and `set -e`
-stops that shell if a command fails. The terminal may remain quiet during uploads
-and the CloudFront wait.
+stops that shell if a command fails. The `EXIT` trap removes the temporary release
+directory when that shell exits, after either success or failure. The terminal
+may remain quiet during uploads and the CloudFront wait.
 
 Expected result: the command prints the release ID and website address after the
 invalidation completes. Save the release ID, and mark it successful only after
@@ -637,8 +666,10 @@ Before the first run:
 5. Merge the pull request containing the deployment workflow into `main`
 
 The environment name must be exactly `staging`. The AWS role's trust policy
-expects `repo:OWNER/REPOSITORY:environment:staging`. The branch rule is required
-because this identity names the environment rather than a Git branch.
+expects the configured `GitHubOidcSubjectPrefix` followed by `:environment:staging`.
+For an immutable subject, this is
+`repo:OWNER@OWNER_ID/REPOSITORY@REPOSITORY_ID:environment:staging`. The branch rule
+is required because this identity names the environment rather than a Git branch.
 
 To watch the deployment:
 
@@ -698,7 +729,7 @@ Open the failed job and expand the first failed step before retrying.
 | --- | --- |
 | Missing staging environment variable | Add the named value under the `staging` environment's **Environment variables**, using the stack outputs |
 | Branch deployment rejected | Select `main` for manual runs and check the environment's branch rule |
-| OIDC or `AssumeRoleWithWebIdentity` error | Check `AWS_ROLE_ARN`, the exact repository and `staging` environment in the role's trust policy, and the `sts.amazonaws.com` audience |
+| OIDC or `AssumeRoleWithWebIdentity` error | Check `AWS_ROLE_ARN`, the `sts.amazonaws.com` audience, and the exact GitHub subject prefix including immutable IDs and the `staging` suffix; follow the identity correction procedure below for an older stack |
 | S3 upload or CloudFront `AccessDenied` | Check that the bucket, distribution, and role variables all come from the same staging stack |
 | Missing artifact or checksum failure | Start a new run on `main`; deployment requires the original verified artifact, and GitHub artifacts expire after seven days |
 | Invalidation waiter times out | Use the invalidation ID printed in **Refresh CloudFront** to inspect its status with the command below |
@@ -750,6 +781,11 @@ execution. The production stack reuses the identity provider from staging.
 
 ### Update an existing stack
 
+For a stack created before `GitHubOidcSubjectPrefix` was added, first follow
+[Correct an existing stack's GitHub identity](#correct-an-existing-stacks-github-identity).
+Leaving this parameter empty preserves the older name-only trust policy, which
+will reject tokens from a repository using immutable subjects.
+
 Set `SITE_STACK` to the existing stack you intend to update. Preserve its current
 parameters by omitting `--parameter-overrides`:
 
@@ -781,6 +817,61 @@ aws cloudformation wait stack-update-complete \
 
 Expected result: `UPDATE_COMPLETE`. If AWS reports no changes, there is no new
 change set to execute.
+
+### Correct an existing stack's GitHub identity
+
+Use this procedure if the credential step reports
+`Not authorized to perform sts:AssumeRoleWithWebIdentity` and the role's expected
+subject differs from GitHub's configured identity. Other authorization failures
+can have different causes; compare the identity and audience before changing them.
+
+1. Use the updated `infra/site.yaml` containing `GitHubOidcSubjectPrefix`
+2. Set the target stack and read its existing repository parameter
+
+```sh
+export AWS_REGION="us-east-1"
+export AWS_PAGER=""
+export SITE_STACK="static-site-staging"
+
+SITE_REPOSITORY="$(
+  aws cloudformation describe-stacks \
+    --region "$AWS_REGION" \
+    --stack-name "$SITE_STACK" \
+    --query "Stacks[0].Parameters[?ParameterKey=='GitHubRepository'].ParameterValue | [0]" \
+    --output text
+)" && export SITE_REPOSITORY
+```
+
+3. Repeat the OIDC prefix lookup in step 1 of the setup guide; stop if it fails or returns an empty value
+4. Validate the updated template as in step 3, then preview this parameter update
+
+```sh
+(
+  set -e
+  : "${SITE_OIDC_SUBJECT_PREFIX:?Read the GitHub OIDC prefix before continuing}"
+  aws cloudformation deploy \
+    --region "$AWS_REGION" \
+    --stack-name "$SITE_STACK" \
+    --template-file infra/site.yaml \
+    --capabilities CAPABILITY_IAM \
+    --parameter-overrides \
+      GitHubOidcSubjectPrefix="$SITE_OIDC_SUBJECT_PREFIX" \
+    --no-execute-changeset
+)
+```
+
+5. Save the returned change-set ARN as `SITE_CHANGE_SET_ARN` and inspect it using the command in step 4 of the setup guide
+6. For this correction alone, expect only `DeployRole` to change, with no replacement; investigate any additional changes before executing
+7. Execute the reviewed change set and wait for `UPDATE_COMPLETE` using the commands in **Update an existing stack**
+8. In **Actions**, open the failed **Deploy staging** run, choose **Re-run jobs**, then **Re-run failed jobs**
+9. Confirm temporary credentials, S3 upload, invalidation, and HTTP verification succeed, then complete the browser checks
+
+Only `GitHubOidcSubjectPrefix` is overridden. CloudFormation preserves the current
+values of the other parameters, including ownership of the shared identity
+provider. Do not change the GitHub identity format or broaden the trust policy
+with wildcards to make authentication pass. If the repository is renamed,
+transferred, or changes its OIDC subject configuration, review the returned
+prefix and update the stack through a new change set.
 
 ### Troubleshooting
 
