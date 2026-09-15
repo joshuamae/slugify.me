@@ -1,4 +1,3 @@
-[![Netlify Status](https://api.netlify.com/api/v1/badges/939a795d-2add-4f4c-ab04-ca986d843ae6/deploy-status)](https://app.netlify.com/projects/slugify-me/deploys)
 # slugify.me
 
 slugify.me is a simple, open source, no-ads web app for turning text into URL-friendly slugs in real time
@@ -26,9 +25,9 @@ processing statement. Each page defines its own title and description.
 Slug generation happens locally in your browser. Text entered into the generator
 is not uploaded or saved by the application, and there are no ads. The Privacy
 Policy describes hosting-related request information separately. A shadcn TL;DR
-card appears before the policy heading and summarizes browser-local processing,
-open source verification, Netlify Observability logging, and the absence of ads
-or tracking added by the project.
+card appears before the policy heading. Updating the policy's previous-host
+disclosures to reflect AWS hosting and the logs actually retained is tracked in
+#70.
 
 ## Site structure
 
@@ -108,8 +107,10 @@ npm run build
 npm run preview
 ```
 
-Netlify deployment settings and the rewrite to React Router's generated
-`__spa-fallback.html` are defined in `netlify.toml`.
+Production runs on private S3 storage behind CloudFront. CloudFormation defines
+hosting and route handling in `infra/site.yaml`, and DNS and the HTTPS certificate
+in `infra/domain.yaml`. GitHub Actions publishes the same verified release to
+staging and production. See [Set up AWS hosting](#set-up-aws-hosting).
 
 ## Code quality
 
@@ -164,10 +165,10 @@ together as a **stack**. Use separate stacks for staging and production.
 The template prepares hosting resources and a GitHub deployment role. Steps 8–9
 below publish and verify a staging release manually. The [staging and production
 workflow](#deploy-staging-and-promote-to-production) handles subsequent
-releases. Each stack uses a generated CloudFront address;
-custom domains and a production cutover are
-separate changes. The current Netlify configuration remains the existing hosting
-setup until a cutover is completed.
+releases. New stacks start with a generated CloudFront address. The
+[custom-domain migration](#move-the-production-domain-to-aws) below adds Route 53
+DNS and an ACM certificate. Production has completed this cutover; the previous
+Netlify deployment is locked and retained for DNS rollback.
 
 ### Existing budget
 
@@ -799,6 +800,7 @@ Open the failed job and expand the first failed step before retrying.
 
 | Symptom | What to check |
 | --- | --- |
+| Unsupported environment | Call the reusable workflow with exactly `staging` or `production`; other values fail validation |
 | Missing deployment environment variable | Add the named variable to the failing job's environment using that environment's stack outputs |
 | Production is waiting | Complete staging browser checks, then use **Review deployments** to approve or reject the release |
 | Later staging runs are pending | Resolve the active run's production approval; the whole promotion shares one queue |
@@ -829,6 +831,258 @@ Previous hashed assets and release archives remain available. No lifecycle clean
 is configured, so include retained storage in the monthly cost review. Archives
 alone do not establish a tested rollback procedure; the rollback exercise remains
 separate work.
+
+### Move the production domain to AWS
+
+Use `infra/domain.yaml` for a public Route 53 hosted zone, the website DNS
+records, an optional Google verification TXT record, and a DNS-validated ACM
+certificate. Domain registration can stay at the existing registrar. The site
+stack accepts `PrimaryDomainName` and `CertificateArn` together; their empty
+defaults preserve CloudFront-only hosting for staging.
+
+This procedure changes DNS in two stages: first preserve the previous website
+while moving DNS hosting, then switch website traffic to the verified CloudFront
+distribution. Keep the previous hosting deployment available throughout the
+migration and rollback window.
+
+#### 1. Record the current DNS configuration
+
+1. Export or copy the complete record list from the current DNS provider
+2. Save the registrar's existing nameservers and any DNSSEC/DS configuration
+3. Record the website's apex destination, resolved IPv4 addresses, and `www` target
+4. Check all other records, including mail, verification, and service subdomains
+5. Compare the new zone with this inventory before changing nameservers
+
+Public DNS lookups cannot enumerate every record in a zone. Use the provider's
+complete inventory. The template manages apex/`www` website records and one
+optional Google TXT token; copy any other records separately. Do not overwrite
+Route 53's generated NS and SOA records with the old provider's values.
+
+A third-party apex ALIAS cannot be copied directly into a Route 53 alias pointing
+to a non-AWS host. `PreviousIpv4Addresses` stores the verified previous website
+IPv4 addresses as ordinary A records for the migration and rollback period.
+Confirm these addresses remain valid with the previous host before rollback.
+
+Set the following values from your inventory and production stack:
+
+```sh
+export AWS_REGION="us-east-1"
+export AWS_PAGER=""
+export SITE_REPOSITORY="OWNER/REPOSITORY"
+export SITE_DOMAIN="example.com"
+export SITE_DOMAIN_STACK="static-site-domain"
+export SITE_PREVIOUS_IPV4="PREVIOUS_IPV4_ADDRESS,SECOND_PREVIOUS_IPV4_ADDRESS"
+export SITE_PREVIOUS_WWW="PREVIOUS_WWW_CNAME_TARGET"
+export SITE_GOOGLE_VERIFICATION="EXISTING_VERIFICATION_TOKEN"
+export SITE_CF_HOST="PRODUCTION_DISTRIBUTION.cloudfront.net"
+```
+
+Use an empty `SITE_GOOGLE_VERIFICATION` if no Google verification record exists.
+Do not include the `google-site-verification=` prefix in the token variable.
+Keep the real DNS backup outside the public repository.
+
+#### 2. Create an inactive Route 53 zone
+
+Validate and prepare the initial change set:
+
+```sh
+aws cloudformation validate-template \
+  --region us-east-1 --template-body file://infra/domain.yaml
+
+aws cloudformation deploy \
+  --region us-east-1 --stack-name "$SITE_DOMAIN_STACK" \
+  --template-file infra/domain.yaml \
+  --parameter-overrides \
+    "DomainName=$SITE_DOMAIN" \
+    "PreviousIpv4Addresses=$SITE_PREVIOUS_IPV4" \
+    "PreviousWwwTarget=$SITE_PREVIOUS_WWW" \
+    "GoogleSiteVerification=$SITE_GOOGLE_VERIFICATION" \
+    EnableCertificate=false TrafficTarget=previous \
+    "CloudFrontDomainName=$SITE_CF_HOST" \
+  --no-execute-changeset
+```
+
+Review and execute the returned change set using the review procedure in step 4
+of the staging setup. Wait for `stack-create-complete`, then retrieve the zone:
+
+```sh
+export SITE_ZONE_ID="$(aws cloudformation describe-stacks \
+  --region us-east-1 --stack-name "$SITE_DOMAIN_STACK" \
+  --query "Stacks[0].Outputs[?OutputKey=='HostedZoneId'].OutputValue | [0]" \
+  --output text)"
+
+aws route53 list-resource-record-sets --hosted-zone-id "$SITE_ZONE_ID"
+aws route53 get-hosted-zone --id "$SITE_ZONE_ID" \
+  --query DelegationSet.NameServers --output text
+```
+
+Expected result: the new zone contains the previous website targets and existing
+verification token. The registrar still points at the old DNS provider, so live
+website traffic is unchanged. Query each new authoritative nameserver directly
+with `dig @NAMESERVER example.com A` and compare its records with the inventory.
+
+#### 3. Validate the certificate before cutover
+
+Add the certificate through another reviewed change set:
+
+```sh
+aws cloudformation deploy \
+  --region us-east-1 --stack-name "$SITE_DOMAIN_STACK" \
+  --template-file infra/domain.yaml \
+  --parameter-overrides EnableCertificate=true \
+  --no-execute-changeset
+```
+
+After executing this update, ACM requests a certificate for the apex domain and
+`www`. CloudFormation adds validation CNAMEs to the new Route 53 zone. While the
+old provider is authoritative, copy those exact CNAME names and values into the
+old provider too. These records prove ownership without changing website traffic.
+
+Find the pending certificate ARN and its required DNS records:
+
+```sh
+aws acm list-certificates --region us-east-1 \
+  --query "CertificateSummaryList[?DomainName=='$SITE_DOMAIN'].[CertificateArn,Status]" \
+  --output table
+
+export SITE_CERTIFICATE_ARN="CERTIFICATE_ARN_FROM_THE_TABLE"
+
+aws acm describe-certificate --region us-east-1 \
+  --certificate-arn "$SITE_CERTIFICATE_ARN" \
+  --query 'Certificate.DomainValidationOptions[*].ResourceRecord'
+```
+
+Enter these records as **CNAME** records. DNS-provider UIs may expect only the
+host portion instead of the full name; check that the domain is not duplicated.
+Keep the validation records in both zones throughout migration, and retain them
+in Route 53 for automatic renewal.
+
+```sh
+aws acm wait certificate-validated --region us-east-1 \
+  --certificate-arn "$SITE_CERTIFICATE_ARN"
+
+aws cloudformation wait stack-update-complete --region us-east-1 \
+  --stack-name "$SITE_DOMAIN_STACK"
+```
+
+Expected result: ACM reports `ISSUED` and the domain stack reports
+`UPDATE_COMPLETE`. Keep `EnableCertificate=true` on later updates. Changing the
+domain or disabling the certificate can remove retained resources from stack
+management; neither is part of normal cutover or rollback.
+
+#### 4. Attach the domain to production and test it
+
+Prepare a production site-stack update. Omitted existing parameters retain their
+current values, including the shared GitHub identity provider:
+
+```sh
+aws cloudformation deploy \
+  --region us-east-1 --stack-name static-site-production \
+  --template-file infra/site.yaml --capabilities CAPABILITY_IAM \
+  --parameter-overrides \
+    "PrimaryDomainName=$SITE_DOMAIN" \
+    "CertificateArn=$SITE_CERTIFICATE_ARN" \
+  --no-execute-changeset
+```
+
+Review the change set before execution. Expect the existing distribution and
+page function to update without replacing the bucket, distribution, or role.
+Wait for `stack-update-complete` and for the distribution to be deployed.
+
+Use curl's `--connect-to` to test AWS while public DNS still serves the previous
+host. This changes the connection destination while preserving the real hostname
+for TLS certificate validation and the HTTP Host header:
+
+```sh
+curl --fail --show-error --silent \
+  --connect-to "$SITE_DOMAIN:443:$SITE_CF_HOST:443" \
+  --dump-header - "https://$SITE_DOMAIN/about"
+
+curl --show-error --silent --head \
+  --connect-to "www.$SITE_DOMAIN:443:$SITE_CF_HOST:443" \
+  "https://www.$SITE_DOMAIN/about?source=dns-check"
+```
+
+Verify all four routes, generated assets, robots.txt, sitemap.xml, canonical URLs,
+content types, and cache headers against the current production release. Confirm
+`www` returns a `301` to the primary domain and preserves the path and query.
+Do not use `--insecure`; a valid certificate is part of this check.
+
+Keep the GitHub production `SITE_URL` variable on its CloudFront hostname until
+the public domain reaches AWS. The site stack's `SiteUrl` output now names the
+custom domain, while `CloudFrontUrl` remains available for these pre-cutover checks.
+
+#### 5. Move DNS hosting, then website traffic
+
+1. Verify the entire Route 53 record inventory, including the ACM CNAMEs
+2. Follow the DNSSEC steps in [AWS's migration procedure](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/migrate-dns-domain-in-use.html) if a DS record exists at the parent zone
+3. At the registrar, replace the old nameservers with all four nameservers from the new hosted zone
+4. Keep the old provider's zone intact while cached delegations expire
+5. Verify public delegation and authoritative answers; website records should still point to the previous host
+6. Prepare and review the website cutover change set below
+
+```sh
+aws cloudformation deploy \
+  --region us-east-1 --stack-name "$SITE_DOMAIN_STACK" \
+  --template-file infra/domain.yaml \
+  --parameter-overrides TrafficTarget=cloudfront \
+  --no-execute-changeset
+```
+
+Execute only after hostname verification succeeds. This changes the apex and
+`www` records to IPv4 and IPv6 CloudFront aliases. It preserves the TXT record,
+validation CNAMEs, and unrelated records. Wait for `stack-update-complete`, then
+check public DNS and HTTPS through normal resolution. Cached old answers can
+continue reaching the previous host until their TTLs expire.
+
+After public DNS and HTTPS verification succeed, update GitHub's production URL:
+
+```sh
+gh variable set SITE_URL --repo "$SITE_REPOSITORY" \
+  --env production --body "https://$SITE_DOMAIN"
+```
+
+Repeat the browser checks in step 9 at the custom domain: real-time conversion,
+copying, direct navigation, and refresh on every route. Record the release,
+certificate, DNS answers, response headers, redirects, metadata, and verification
+time before marking the cutover complete.
+
+#### Roll back website DNS
+
+Keep the last known-good deployment available at the previous host. To restore
+its website records, prepare and execute a reviewed domain-stack update:
+
+```sh
+aws cloudformation deploy \
+  --region us-east-1 --stack-name "$SITE_DOMAIN_STACK" \
+  --template-file infra/domain.yaml \
+  --parameter-overrides TrafficTarget=previous \
+  --no-execute-changeset
+```
+
+This restores the saved apex A records and `www` CNAME and removes the CloudFront
+AAAA aliases. Verify the previous host's HTTPS pages after DNS caches expire.
+DNS rollback is not immediate, and it does not restore files within the AWS
+bucket. For application release rollback, use the separate release procedure.
+
+If the problem is DNS delegation itself, restore the original nameservers at the
+registrar from the saved inventory. Keep both zones intact until caches expire.
+Do not delete the Route 53 zone, remove ACM validation CNAMEs, or detach the
+certificate as part of website DNS rollback.
+
+#### Retain the previous deployment for rollback
+
+The verified production cutover removes `netlify.toml` and the Netlify status
+badge from this repository. Keep the previous Netlify deployment locked and
+available for the rollback window. Removing the configuration file does not
+disconnect Netlify's GitHub integration or stop builds. See Netlify's
+[deployment management instructions](https://docs.netlify.com/deploy/manage-deploys/manage-deploys-overview/)
+to manage automatic publishing. Hosting/privacy disclosures must describe the
+actual hosting and logging configuration as part of #70.
+
+The domain stack retains its zone, records, and certificate if deleted. Inspect
+retained resources separately during eventual teardown; deleting the stack is
+not a DNS rollback procedure.
 
 ### Update an existing stack
 
