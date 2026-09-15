@@ -57,6 +57,7 @@ jobs:
       SITE_ARTIFACT_ID: ${{ inputs.artifact-id }}
       SITE_MANIFEST_SHA256: ${{ inputs.manifest-sha256 }}
       SITE_RECOVER_OPERATION: ${{ inputs.recover-operation }}
+      STAGING_BASIC_AUTH: ${{ inputs.environment == 'staging' && secrets.STAGING_BASIC_AUTH || '' }}
 
     steps:
       - name: Check environment settings
@@ -73,6 +74,10 @@ jobs:
               exit 1
             fi
           done
+          if [[ "$SITE_ENVIRONMENT" == staging && -z "$STAGING_BASIC_AUTH" ]]; then
+            printf '::error::Missing staging environment secret: STAGING_BASIC_AUTH\n'
+            exit 1
+          fi
           [[ "$SITE_RELEASE_ID" =~ ^[0-9a-f]{12}-([0-9]+-[0-9]+|[0-9]{8}T[0-9]{6}Z)$ ]]
           case "$SITE_SOURCE" in
             artifact)
