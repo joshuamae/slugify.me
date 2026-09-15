@@ -162,8 +162,8 @@ together as a **stack**. Use separate stacks for staging and production.
 - **OIDC** — A way for GitHub to obtain temporary AWS deployment credentials
 
 The template prepares hosting resources and a GitHub deployment role. Steps 8–9
-below publish and verify a staging release manually. The [automatic staging
-deployment](#deploy-staging-with-github-actions) workflow handles subsequent
+below publish and verify a staging release manually. The [staging and production
+workflow](#deploy-staging-and-promote-to-production) handles subsequent
 releases. Each stack uses a generated CloudFront address;
 custom domains and a production cutover are
 separate changes. The current Netlify configuration remains the existing hosting
@@ -627,9 +627,8 @@ remain errors instead of returning homepage HTML.
 
 ### GitHub deployment settings
 
-Create a GitHub environment named `staging` for the staging workflow. Add a
-separate `production` environment when implementing production deployment. Add
-these variables to each environment using its own stack outputs:
+Create GitHub environments named `staging` and `production`. Add these variables
+to each environment using its own stack outputs:
 
 | Variable | Value |
 | --- | --- |
@@ -639,124 +638,23 @@ these variables to each environment using its own stack outputs:
 | `CLOUDFRONT_DISTRIBUTION_ID` | `DistributionId` |
 | `SITE_URL` | `SiteUrl` |
 
-Restrict environment deployments to the intended branch. Configure production
-approval where your GitHub plan supports it. The environment restrictions enforce
+Restrict both environments to the `main` branch. Require a reviewer for
+production and disable administrator bypass. The environment restrictions enforce
 the branch policy because the AWS trust rule identifies the repository and
 environment, rather than a branch.
 
-The staging workflow requests `id-token: write` only in its deployment job and
-uses the `staging` GitHub environment to assume the role. The role grants file
+The publishing jobs request `id-token: write` and use their target GitHub
+environment to assume its role. The build job has only `contents: read`. The role grants file
 publishing and cache invalidation permissions; infrastructure changes use the
 operator's separate AWS identity. OIDC lets GitHub request temporary credentials
 without storing AWS access keys in GitHub. See
 [GitHub's AWS OIDC guide](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws).
 
-### Deploy staging with GitHub Actions
+### Create the production stack
 
-The workflow in `.github/workflows/deploy-staging.yaml` checks and builds each
-push to `main`, including merged pull requests, then publishes that build to
-staging. It does not deploy pull requests or branches other than `main`.
-
-Before the first run:
-
-1. Create the staging stack and complete the manual verification in step 9
-2. In the GitHub repository, open **Settings**, then **Environments**, then **staging**
-3. Under **Environment variables**, confirm all five variables in the table above match the staging stack outputs
-4. Under **Deployment branches and tags**, select **Selected branches and tags** and add a branch rule for `main` only
-5. Merge the pull request containing the deployment workflow into `main`
-
-The environment name must be exactly `staging`. The AWS role's trust policy
-expects the configured `GitHubOidcSubjectPrefix` followed by `:environment:staging`.
-For an immutable subject, this is
-`repo:OWNER@OWNER_ID/REPOSITORY@REPOSITORY_ID:environment:staging`. The branch rule
-is required because this identity names the environment rather than a Git branch.
-
-To watch the deployment:
-
-1. Open the repository's **Actions** tab
-2. Select **Deploy staging** and open the run for your merge commit
-3. Wait for **Check and package** and **Publish and verify staging** to succeed
-4. Open the run's summary and save its release ID, commit, and CloudFront invalidation ID
-5. Open the website link and complete the browser checks in step 9
-
-Expected result: the summary reports `success` for the S3 archive upload and HTTP
-verification, and the browser generates and copies slugs correctly.
-
-The first job runs `npm ci`, `npm run check`, and `npm run build` without AWS
-credentials. It packages `build/client/` as `site.tar.gz`, creates `SHA256SUMS`, and
-saves both as a GitHub artifact for seven days. The second job downloads that
-artifact, verifies its checksum, and obtains temporary AWS credentials. It does
-not rebuild the application.
-
-Each release ID combines the first 12 characters of the commit SHA, the GitHub
-run ID, and the build attempt number. The job saves the archive and checksum under
-`releases/RELEASE_ID/` in S3, uploads hashed assets before HTML with the headers
-listed above, and waits for the CloudFront invalidation to finish.
-
-HTTP verification compares the downloaded HTML for all four routes, one generated
-JavaScript file, one CSS file, `robots.txt`, and `sitemap.xml` with the packaged
-files. It also checks their status, content type, and cache headers, confirms a
-missing asset returns `403` or `404`, and confirms anonymous direct S3 access to
-the homepage returns `403`. Bucket-policy inspection and browser interaction
-remain the manual checks in step 9.
-
-The `aws-staging` concurrency group allows one active workflow run at a time.
-New runs do not cancel an active deployment. GitHub may replace a pending run
-with a newer pending run, and does not guarantee queue order. Do not run manual
-S3 uploads while an automated deployment is active; terminal uploads do not use
-this queue. See [GitHub workflow concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
-
-To deploy the current `main` branch again, open **Actions**, select **Deploy
-staging**, choose **Run workflow**, select `main`, and choose **Run workflow**.
-From the repository root, the equivalent CLI command is:
-
-```sh
-gh workflow run deploy-staging.yaml \
-  --repo "$(gh repo view --json nameWithOwner --jq .nameWithOwner)" \
-  --ref main
-```
-
-**Re-run jobs** uses the original run's commit. Re-running an older successful run
-can replace the current staging site with older content. A new **Run workflow**
-on `main` builds the current branch instead. These actions become available after
-the workflow is merged into the default branch.
-
-### Troubleshoot automated staging deployment
-
-Open the failed job and expand the first failed step before retrying.
-
-| Symptom | What to check |
-| --- | --- |
-| Missing staging environment variable | Add the named value under the `staging` environment's **Environment variables**, using the stack outputs |
-| Branch deployment rejected | Select `main` for manual runs and check the environment's branch rule |
-| OIDC or `AssumeRoleWithWebIdentity` error | Check `AWS_ROLE_ARN`, the `sts.amazonaws.com` audience, and the exact GitHub subject prefix including immutable IDs and the `staging` suffix; follow the identity correction procedure below for an older stack |
-| S3 upload or CloudFront `AccessDenied` | Check that the bucket, distribution, and role variables all come from the same staging stack |
-| Missing artifact or checksum failure | Start a new run on `main`; deployment requires the original verified artifact, and GitHub artifacts expire after seven days |
-| Invalidation waiter times out | Use the invalidation ID printed in **Refresh CloudFront** to inspect its status with the command below |
-| HTTP verification fails | Check the failing URL, response headers, and content; a `200` response alone is insufficient, and stale content fails the file comparison |
-
-To inspect an invalidation, replace the placeholders with the staging distribution
-ID and the invalidation ID from the run:
-
-```sh
-aws cloudfront get-invalidation \
-  --distribution-id DISTRIBUTION_ID \
-  --id INVALIDATION_ID \
-  --query 'Invalidation.Status' \
-  --output text
-```
-
-A failed upload or verification does not trigger automatic rollback. S3 uploads
-replace files individually, so a failed run may leave a partially updated site.
-Retain the failed run's details, correct the cause, and deploy a known-good commit.
-Previous hashed assets and S3 release archives remain available; no lifecycle
-cleanup is configured, so include retained storage in the monthly cost review.
-Saving an archive does not establish a tested rollback procedure. Production
-promotion and a rollback exercise remain separate work.
-
-### Create production after staging works
-
-First, save the shared identity provider ARN from staging:
+Complete staging setup and verification before creating production. Use the same
+`infra/site.yaml` template to create a separate bucket, CloudFront distribution,
+and deployment role. Reuse the existing GitHub identity provider:
 
 ```sh
 SITE_OIDC_ARN="$(
@@ -768,7 +666,7 @@ SITE_OIDC_ARN="$(
 )"
 ```
 
-Confirm the command succeeded and returned an ARN before continuing:
+Confirm the command succeeded and returned an ARN, then set:
 
 ```sh
 export SITE_OIDC_ARN
@@ -776,8 +674,161 @@ export SITE_ENVIRONMENT="production"
 export SITE_STACK="static-site-production"
 ```
 
-Repeat steps 4–6 for the new production stack. Save its new change-set ARN before
-execution. The production stack reuses the identity provider from staging.
+Repeat steps 4–6 for the production stack, including the exact GitHub OIDC subject
+prefix obtained in step 1. Review the new change set before execution. Expect new
+production resources and no replacement of staging resources. Keep the staging
+stack's original identity-provider ownership parameter unchanged.
+
+Expected result: `static-site-production` reaches `CREATE_COMPLETE` and returns
+its own bucket, distribution, deployment role, and HTTPS URL. The production URL
+initially uses the CloudFront hostname. Custom-domain and DNS cutover are separate
+steps.
+
+### Configure production approval
+
+1. Open the repository's **Settings**, then **Environments**
+2. Create an environment named exactly `production`
+3. Enable **Required reviewers** and select the maintainer who approves releases
+4. For a sole maintainer, leave **Prevent self-review** unchecked so the person who triggered the run can approve it
+5. Deselect **Allow administrators to bypass configured protection rules**
+6. Under **Deployment branches and tags**, select **Selected branches and tags** and add a branch rule for `main` only
+7. Add the five **Environment variables** from the production stack outputs, using the table above
+8. Confirm that `staging` also permits only the `main` branch
+
+Self-review provides a manual approval gate. It does not provide an independent
+second-person review. Required reviewers depend on repository visibility and
+GitHub plan; see [Managing environments](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments).
+
+To populate production variables from the terminal, first confirm `SITE_REPOSITORY`
+and `AWS_REGION` are set as in step 1. Run this block only after production reaches
+`CREATE_COMPLETE`:
+
+```sh
+(
+  set -eu
+  SITE_STACK="static-site-production"
+  set_output_variable() {
+    local variable="$1" output="$2" value
+    value="$(aws cloudformation describe-stacks \
+      --region "$AWS_REGION" --stack-name "$SITE_STACK" \
+      --query "Stacks[0].Outputs[?OutputKey=='$output'].OutputValue | [0]" \
+      --output text)"
+    test -n "$value" && test "$value" != None
+    gh variable set "$variable" --repo "$SITE_REPOSITORY" \
+      --env production --body "$value"
+  }
+  gh variable set AWS_REGION --repo "$SITE_REPOSITORY" \
+    --env production --body "$AWS_REGION"
+  set_output_variable AWS_ROLE_ARN DeployRoleArn
+  set_output_variable S3_BUCKET BucketName
+  set_output_variable CLOUDFRONT_DISTRIBUTION_ID DistributionId
+  set_output_variable SITE_URL SiteUrl
+  gh variable list --repo "$SITE_REPOSITORY" --env production
+)
+```
+
+The production role expects the exact `GitHubOidcSubjectPrefix` followed by
+`:environment:production`. Staging expects the same prefix followed by
+`:environment:staging`. Environment branch rules restrict the branch because
+these AWS identities name environments rather than branches.
+
+### Deploy staging and promote to production
+
+`.github/workflows/deploy-staging.yaml` starts on pushes to `main`, including
+merged pull requests, or a manual run on `main`. Pull requests and other branches
+do not deploy. `.github/workflows/publish-site.yaml` is a reusable workflow called
+by the staging and production jobs; it has no standalone manual trigger.
+
+The run follows this sequence:
+
+1. **Check and package** runs `npm ci`, `npm run check`, and `npm run build` without AWS credentials
+2. The build packages `build/client/`, creates `SHA256SUMS`, and saves both files as one immutable GitHub artifact retained for seven days
+3. **Publish and verify staging** downloads that artifact by its numeric ID, verifies the archive against both `SHA256SUMS` and the build job's SHA-256 output, then publishes and verifies staging
+4. **Publish and verify production** becomes eligible only after the build and staging jobs succeed, and waits for the production environment's required reviewer
+5. After approval, production downloads the same artifact ID, verifies the same SHA-256, and publishes and verifies its contents without rebuilding
+
+Each release ID combines the first 12 characters of the commit SHA, the GitHub
+run ID, and the build attempt number. Each environment archives the package under
+`releases/RELEASE_ID/`, uploads assets before HTML with the documented cache
+headers, and waits for its CloudFront invalidation to finish.
+
+The shared publishing job compares all four page responses, one generated
+JavaScript file, one CSS file, `robots.txt`, and `sitemap.xml` with the packaged
+files. It checks HTTP status, content type, and cache headers, confirms a missing
+asset returns `403` or `404`, and confirms anonymous direct S3 homepage access
+returns `403`.
+
+#### Approve and verify a release
+
+1. Merge the workflow changes into `main` after both environments are configured
+2. Open **Actions**, select **Deploy staging and production**, and open the run for the merge commit
+3. Wait for staging verification to succeed, then open the staging site and complete the browser checks in step 9
+4. Review the staging deployment summary and record its release ID, commit, artifact ID, and archive SHA-256
+5. Select **Review deployments**, select `production`, and choose **Approve and deploy** only if the staging checks are satisfactory
+6. Wait for production publishing and HTTP verification to succeed
+7. Confirm the production summary shows the same release ID, commit, artifact ID, and SHA-256 as staging
+8. Open the production website link and repeat the browser checks in step 9
+
+Expected result: both environments serve the same tested release; both summaries
+report successful archiving and HTTP verification. Record the two invalidation
+IDs as deployment evidence. Reject the deployment if staging browser checks fail.
+
+The existing `aws-staging` concurrency group now serializes the whole promotion
+flow, including production approval. A waiting approval holds the queue, so the
+staging site remains on the release under review. Approve or reject promptly.
+New runs do not cancel an active run; GitHub may replace a pending run with a newer
+pending run and does not guarantee ordering. Do not run manual S3 uploads while
+an automated deployment is active. See [GitHub workflow concurrency](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency).
+
+To build the current `main` branch again and start another promotion:
+
+```sh
+gh workflow run deploy-staging.yaml \
+  --repo "$(gh repo view --json nameWithOwner --jq .nameWithOwner)" \
+  --ref main
+```
+
+**Re-run jobs** uses the original run's commit. Re-running an older run can
+replace newer content. Use a new **Run workflow** on `main` for the current source.
+A production retry still requires approval and the original artifact. If that
+artifact has expired, start a new run so staging tests the new package first.
+
+### Troubleshoot automated deployment
+
+Open the failed job and expand the first failed step before retrying.
+
+| Symptom | What to check |
+| --- | --- |
+| Missing deployment environment variable | Add the named variable to the failing job's environment using that environment's stack outputs |
+| Production is waiting | Complete staging browser checks, then use **Review deployments** to approve or reject the release |
+| Later staging runs are pending | Resolve the active run's production approval; the whole promotion shares one queue |
+| Branch deployment rejected | Select `main` for manual runs and check both environment branch rules |
+| OIDC or `AssumeRoleWithWebIdentity` error | Check `AWS_ROLE_ARN`, audience `sts.amazonaws.com`, exact immutable subject prefix, and the correct environment suffix |
+| S3 upload or CloudFront `AccessDenied` | Confirm bucket, distribution, and role variables all belong to the target environment's stack |
+| Missing artifact or checksum failure | Start a new run on `main`; both environments require the original verified artifact, which expires after seven days |
+| Invalidation waiter times out | Inspect the invalidation ID printed in **Refresh CloudFront** using the command below |
+| HTTP verification fails | Check the failing URL, headers, and contents; stale files fail the byte comparison even when the status is `200` |
+
+To inspect an invalidation, replace both placeholders with values from the
+failing environment's run:
+
+```sh
+aws cloudfront get-invalidation \
+  --distribution-id DISTRIBUTION_ID \
+  --id INVALIDATION_ID \
+  --query 'Invalidation.Status' \
+  --output text
+```
+
+Failed staging checks block production. A failure after production uploads start
+does not trigger automatic rollback: S3 replaces files individually, so a failed
+run can leave a partially updated site. Retain the failed run's details, correct
+the cause, and deploy a known-good commit through staging and approval again.
+
+Previous hashed assets and release archives remain available. No lifecycle cleanup
+is configured, so include retained storage in the monthly cost review. Archives
+alone do not establish a tested rollback procedure; the rollback exercise remains
+separate work.
 
 ### Update an existing stack
 
