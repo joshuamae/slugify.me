@@ -1,0 +1,63 @@
+# Bound the DescribeEvents workaround to an isolated exception in the deployment region
+# All other shared inspection permissions remain limited to the existing stack ARNs
+let inspection = Resources.StackInspection
+let expected_event_read = {
+    "Sid": "ReadDeploymentEvents",
+    "Effect": "Allow",
+    "Action": "cloudformation:DescribeEvents",
+    "Resource": "*",
+    "Condition": {
+        "StringEquals": {"aws:RequestedRegion": {"Ref": "AWS::Region"}}
+    }
+}
+let expected_stack_reads = {
+    "Effect": "Allow",
+    "Action": [
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeChangeSet",
+        "cloudformation:ListStackResources",
+        "cloudformation:GetTemplate"
+    ],
+    "Resource": {"Ref": "StackArns"}
+}
+let expected_pre_merge_cleanup = {
+    "Sid": "CleanupPreMergeChangeSets",
+    "Effect": "Allow",
+    "Action": "cloudformation:DeleteChangeSet",
+    "Resource": {"Ref": "StackArns"},
+    "Condition": {
+        "StringLike": {
+            "cloudformation:ChangeSetName": [
+                {"Fn::Sub": "github-${Environment}-pr-*"},
+                {"Fn::Sub": "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/github-${Environment}-pr-*/*"}
+            ]
+        }
+    }
+}
+
+rule deployment_events_only_allow_region_limited_reads {
+    let event_reads = %inspection.Properties.PolicyDocument.Statement[
+        Sid == 'ReadDeploymentEvents'
+    ]
+    %event_reads !empty
+    %event_reads == %expected_event_read
+}
+
+rule shared_inspection_keeps_existing_stack_scope {
+    %inspection.Type == 'AWS::IAM::Policy'
+    %inspection.Properties.Roles == [{"Ref": "Planner"}, {"Ref": "Executor"}]
+    some %inspection.Properties.PolicyDocument.Statement[*] == %expected_stack_reads
+    %inspection.Properties.PolicyDocument.Statement[*] {
+        this == %expected_stack_reads OR
+        this == %expected_event_read
+    }
+}
+
+# Planning cleanup must never remove the reviewed change sets used after merge
+rule planner_cleanup_only_deletes_pre_merge_change_sets {
+    let cleanup = Resources.Planner.Properties.Policies[*].PolicyDocument.Statement[
+        Sid == 'CleanupPreMergeChangeSets'
+    ]
+    %cleanup !empty
+    %cleanup == %expected_pre_merge_cleanup
+}

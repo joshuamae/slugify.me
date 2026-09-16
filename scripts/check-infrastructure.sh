@@ -16,4 +16,6 @@ cfn-lint --regions us-east-1 --template \
     infra/site.yaml infra/domain.yaml infra/monitoring.yaml infra/deployment-roles.yaml
 cfn-guard validate --rules infra/monitoring.guard --data infra/monitoring.yaml
 cfn-guard test --rules-file infra/monitoring.guard --test-data infra/monitoring_tests.yaml
+cfn-guard validate --rules infra/deployment-roles.guard --data infra/deployment-roles.yaml
+cfn-guard test --rules-file infra/deployment-roles.guard --test-data infra/deployment-roles_tests.yaml
 python3 -B -m unittest discover -s scripts -p 'test_*.py'

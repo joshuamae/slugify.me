@@ -1,0 +1,134 @@
+name: AWS pre-merge checks
+
+on:
+  workflow_run:
+    workflows: [Infrastructure checks]
+    types: [completed]
+
+# Privileged jobs run trusted default-branch code only. PR files are data.
+permissions:
+  contents: read
+
+concurrency:
+  group: aws-pre-merge-${{ github.event.workflow_run.head_repository.id }}-${{ github.event.workflow_run.head_branch }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  identify:
+    if: github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      checks: write
+    outputs:
+      check-id: ${{ steps.check.outputs.check-id }}
+      pr: ${{ steps.check.outputs.pr }}
+      head: ${{ steps.check.outputs.head }}
+      base: ${{ steps.check.outputs.base }}
+      run-plans: ${{ steps.check.outputs.run-plans }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Bind the check to the current PR revision
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ github.event.workflow_run.id }}
+          SOURCE_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+        run: |
+          python3 -B scripts/pr-infrastructure-check.py begin \
+            --repository "$GITHUB_REPOSITORY" --run "$SOURCE_RUN" --attempt "$SOURCE_ATTEMPT"
+
+  plan:
+    needs: identify
+    if: needs.identify.outputs.run-plans == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: [staging, production]
+    environment: ${{ matrix.environment }}-plan
+    permissions:
+      contents: read
+      pull-requests: read
+      id-token: write
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      PR_NUMBER: ${{ needs.identify.outputs.pr }}
+      PR_HEAD: ${{ needs.identify.outputs.head }}
+      PR_BASE: ${{ needs.identify.outputs.base }}
+      SITE_ENVIRONMENT: ${{ matrix.environment }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Fetch only template data from the exact PR revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 -B scripts/check-pr-infrastructure.py fetch \
+            --repository "$GITHUB_REPOSITORY" --pr "$PR_NUMBER" \
+            --head "$PR_HEAD" --base "$PR_BASE" --directory "$RUNNER_TEMP/candidate"
+      - name: Validate candidate data without AWS credentials or network access
+        run: |
+          docker build --tag static-site-infra-checks tools/infrastructure
+          docker run --rm --network none --entrypoint python3 \
+            --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/workspace,readonly" \
+            --mount "type=bind,src=$RUNNER_TEMP/candidate,dst=/candidate" \
+            static-site-infra-checks -B scripts/check-pr-infrastructure.py prepare --directory /candidate
+      - name: Obtain the real planning role with a planning-only session
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6
+        with:
+          role-to-assume: ${{ vars.AWS_INFRA_PLAN_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: premerge-${{ matrix.environment }}-${{ github.run_id }}
+          mask-aws-account-id: true
+          inline-session-policy: >-
+            {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["cloudformation:ValidateTemplate","cloudformation:DescribeStacks","cloudformation:DescribeChangeSet","cloudformation:DescribeEvents","cloudformation:CreateChangeSet","cloudformation:DeleteChangeSet"],"Resource":"*"}]}
+      - name: Inspect proposed changes and clean up without execution
+        run: |
+          timeout --signal=INT --kill-after=60s 20m python3 -B scripts/check-pr-infrastructure.py plan \
+            --directory "$RUNNER_TEMP/candidate" --environment "$SITE_ENVIRONMENT" \
+            --run "$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --report "$GITHUB_STEP_SUMMARY"
+
+  report:
+    needs: [identify, plan]
+    if: always() && needs.identify.outputs.check-id != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
+      checks: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Publish the result only for the tested revision
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ github.event.workflow_run.id }}
+          SOURCE_ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          CHECK_ID: ${{ needs.identify.outputs.check-id }}
+          PR_NUMBER: ${{ needs.identify.outputs.pr }}
+          PR_HEAD: ${{ needs.identify.outputs.head }}
+          PR_BASE: ${{ needs.identify.outputs.base }}
+          PLAN_RESULT: ${{ needs.plan.result }}
+        run: |
+          python3 -B scripts/pr-infrastructure-check.py finish \
+            --repository "$GITHUB_REPOSITORY" --run "$SOURCE_RUN" --attempt "$SOURCE_ATTEMPT" \
+            --check-id "$CHECK_ID" --pr "$PR_NUMBER" --head "$PR_HEAD" --base "$PR_BASE" \
+            --result "$PLAN_RESULT"

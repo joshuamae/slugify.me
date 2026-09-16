@@ -134,6 +134,9 @@ For UI changes, verify the following in a browser:
 
 For infrastructure changes, use the additional
 [infrastructure validators](infrastructure-delivery.md#run-the-same-validators-locally).
+Local checks do not exercise the deployed AWS planning roles. Follow
+[check a pull request before merge](infrastructure-delivery.md#check-a-pull-request-before-merge)
+for the required GitHub checks, AWS planning coverage and initial rollout.
 
 ## Maintain search and browser metadata
 

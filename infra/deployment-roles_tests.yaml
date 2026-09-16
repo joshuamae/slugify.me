@@ -1,0 +1,345 @@
+# Guard the narrow DescribeEvents exception without granting broader deployment access
+# Anchors reuse complete values so each invalid case isolates a permission regression
+
+- name: Shared inspection allows only existing stack reads and regional event reads
+  input:
+      Resources:
+          StackInspection:
+              Type: AWS::IAM::Policy
+              Properties:
+                  Roles: &deployment_roles [{ Ref: Planner }, { Ref: Executor }]
+                  PolicyDocument:
+                      Statement:
+                          - &stack_reads
+                            Effect: Allow
+                            Action:
+                                - cloudformation:DescribeStacks
+                                - cloudformation:DescribeChangeSet
+                                - cloudformation:ListStackResources
+                                - cloudformation:GetTemplate
+                            Resource: { Ref: StackArns }
+                          - &event_read
+                            Sid: ReadDeploymentEvents
+                            Effect: Allow
+                            Action: cloudformation:DescribeEvents
+                            Resource: '*'
+                            Condition: &requested_region
+                                StringEquals:
+                                    aws:RequestedRegion: { Ref: 'AWS::Region' }
+  expectations:
+      rules:
+          deployment_events_only_allow_region_limited_reads: PASS
+          shared_inspection_keeps_existing_stack_scope: PASS
+
+- name: Event reads reject a missing region condition
+  input:
+      Resources:
+          StackInspection:
+              Type: AWS::IAM::Policy
+              Properties:
+                  Roles: *deployment_roles
+                  PolicyDocument:
+                      Statement:
+                          - *stack_reads
+                          - Sid: ReadDeploymentEvents
+                            Effect: Allow
+                            Action: cloudformation:DescribeEvents
+                            Resource: '*'
+  expectations:
+      rules:
+          deployment_events_only_allow_region_limited_reads: FAIL
+          shared_inspection_keeps_existing_stack_scope: FAIL
+
+- name: Event reads reject wildcard region matching
+  input:
+      Resources:
+          StackInspection:
+              Type: AWS::IAM::Policy
+              Properties:
+                  Roles: *deployment_roles
+                  PolicyDocument:
+                      Statement:
+                          - *stack_reads
+                          - Sid: ReadDeploymentEvents
+                            Effect: Allow
+                            Action: cloudformation:DescribeEvents
+                            Resource: '*'
+                            Condition:
+                                StringLike:
+                                    aws:RequestedRegion: '*'
+  expectations:
+      rules:
+          deployment_events_only_allow_region_limited_reads: FAIL
+          shared_inspection_keeps_existing_stack_scope: FAIL
+
+- name: Event reads reject a different or additional region
+  input:
+      Resources:
+          StackInspection:
+              Type: AWS::IAM::Policy
+              Properties:
+                  Roles: *deployment_roles
+                  PolicyDocument:
+                      Statement:
+                          - *stack_reads
+                          - Sid: ReadDeploymentEvents
+                            Effect: Allow
+                            Action: cloudformation:DescribeEvents
+                            Resource: '*'
+                            Condition:
+                                StringEquals:
+                                    aws:RequestedRegion:
+                                        [{ Ref: 'AWS::Region' }, us-west-2]
+  expectations:
+      rules:
+          deployment_events_only_allow_region_limited_reads: FAIL
+          shared_inspection_keeps_existing_stack_scope: FAIL
+
+- name: Event reads reject optional region conditions
+  input:
+      Resources:
+          StackInspection:
+              Type: AWS::IAM::Policy
+              Properties:
+                  Roles: *deployment_roles
+                  PolicyDocument:
+                      Statement:
+                          - *stack_reads
+                          - Sid: ReadDeploymentEvents
+                            Effect: Allow
+                            Action: cloudformation:DescribeEvents
+                            Resource: '*'
+                            Condition:
+                                StringEqualsIfExists:
+                                    aws:RequestedRegion: { Ref: 'AWS::Region' }
+  expectations:
+      rules:
+          deployment_events_only_allow_region_limited_reads: FAIL
+          shared_inspection_keeps_existing_stack_scope: FAIL
+
+- name: Event reads reject write actions on wildcard resources
+  input:
+      Resources:
+          StackInspection:
+              Type: AWS::IAM::Policy
+              Properties:
+                  Roles: *deployment_roles
+                  PolicyDocument:
+                      Statement:
+                          - *stack_reads
+                          - Sid: ReadDeploymentEvents
+                            Effect: Allow
+                            Action:
+                                [
+                                    cloudformation:DescribeEvents,
+                                    cloudformation:ExecuteChangeSet,
+                                ]
+                            Resource: '*'
+                            Condition: *requested_region
+  expectations:
+      rules:
+          deployment_events_only_allow_region_limited_reads: FAIL
+          shared_inspection_keeps_existing_stack_scope: FAIL
+
+- name: Event reads reject wildcard actions
+  input:
+      Resources:
+          StackInspection:
+              Type: AWS::IAM::Policy
+              Properties:
+                  Roles: *deployment_roles
+                  PolicyDocument:
+                      Statement:
+                          - *stack_reads
+                          - Sid: ReadDeploymentEvents
+                            Effect: Allow
+                            Action: 'cloudformation:*'
+                            Resource: '*'
+                            Condition: *requested_region
+  expectations:
+      rules:
+          deployment_events_only_allow_region_limited_reads: FAIL
+          shared_inspection_keeps_existing_stack_scope: FAIL
+
+- name: Missing event reads fail instead of skipping the rule
+  input:
+      Resources:
+          StackInspection:
+              Type: AWS::IAM::Policy
+              Properties:
+                  Roles: *deployment_roles
+                  PolicyDocument:
+                      Statement: [*stack_reads]
+  expectations:
+      rules:
+          deployment_events_only_allow_region_limited_reads: FAIL
+          shared_inspection_keeps_existing_stack_scope: PASS
+
+- name: An extra unrestricted statement cannot bypass the dedicated exception
+  input:
+      Resources:
+          StackInspection:
+              Type: AWS::IAM::Policy
+              Properties:
+                  Roles: *deployment_roles
+                  PolicyDocument:
+                      Statement:
+                          - *stack_reads
+                          - *event_read
+                          - Effect: Allow
+                            Action: cloudformation:DescribeEvents
+                            Resource: '*'
+  expectations:
+      rules:
+          deployment_events_only_allow_region_limited_reads: PASS
+          shared_inspection_keeps_existing_stack_scope: FAIL
+
+- name: Existing stack inspection reads cannot use wildcard resources
+  input:
+      Resources:
+          StackInspection:
+              Type: AWS::IAM::Policy
+              Properties:
+                  Roles: *deployment_roles
+                  PolicyDocument:
+                      Statement:
+                          - Effect: Allow
+                            Action:
+                                - cloudformation:DescribeStacks
+                                - cloudformation:DescribeChangeSet
+                                - cloudformation:ListStackResources
+                                - cloudformation:GetTemplate
+                            Resource: '*'
+                          - *event_read
+  expectations:
+      rules:
+          deployment_events_only_allow_region_limited_reads: PASS
+          shared_inspection_keeps_existing_stack_scope: FAIL
+
+- name: Existing stack inspection cannot acquire write permissions
+  input:
+      Resources:
+          StackInspection:
+              Type: AWS::IAM::Policy
+              Properties:
+                  Roles: *deployment_roles
+                  PolicyDocument:
+                      Statement:
+                          - Effect: Allow
+                            Action:
+                                - cloudformation:DescribeStacks
+                                - cloudformation:DescribeChangeSet
+                                - cloudformation:ListStackResources
+                                - cloudformation:GetTemplate
+                                - cloudformation:UpdateStack
+                            Resource: { Ref: StackArns }
+                          - *event_read
+  expectations:
+      rules:
+          deployment_events_only_allow_region_limited_reads: PASS
+          shared_inspection_keeps_existing_stack_scope: FAIL
+
+- name: Existing stack reads must remain available to the deployment workflow
+  input:
+      Resources:
+          StackInspection:
+              Type: AWS::IAM::Policy
+              Properties:
+                  Roles: *deployment_roles
+                  PolicyDocument:
+                      Statement: [*event_read]
+  expectations:
+      rules:
+          deployment_events_only_allow_region_limited_reads: PASS
+          shared_inspection_keeps_existing_stack_scope: FAIL
+
+- name: Shared inspection cannot be attached to an unrelated role
+  input:
+      Resources:
+          StackInspection:
+              Type: AWS::IAM::Policy
+              Properties:
+                  Roles: [{ Ref: Planner }, { Ref: Executor }, unrelated-role]
+                  PolicyDocument:
+                      Statement: [*stack_reads, *event_read]
+  expectations:
+      rules:
+          deployment_events_only_allow_region_limited_reads: PASS
+          shared_inspection_keeps_existing_stack_scope: FAIL
+
+- name: Planner cleanup only deletes pre-merge change sets on existing stacks
+  input:
+      Resources:
+          Planner:
+              Properties:
+                  Policies:
+                      - PolicyName: PrepareExistingStacks
+                        PolicyDocument:
+                            Statement:
+                                - Sid: CleanupPreMergeChangeSets
+                                  Effect: Allow
+                                  Action: cloudformation:DeleteChangeSet
+                                  Resource: { Ref: StackArns }
+                                  Condition: &pre_merge_names
+                                      StringLike:
+                                          cloudformation:ChangeSetName:
+                                              - Fn::Sub: 'github-${Environment}-pr-*'
+                                              - Fn::Sub: 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/github-${Environment}-pr-*/*'
+  expectations:
+      rules:
+          planner_cleanup_only_deletes_pre_merge_change_sets: PASS
+
+- name: Planner cleanup rejects a missing permission instead of skipping
+  input:
+      Resources:
+          Planner:
+              Properties:
+                  Policies:
+                      - PolicyName: PrepareExistingStacks
+                        PolicyDocument:
+                            Statement: []
+  expectations:
+      rules:
+          planner_cleanup_only_deletes_pre_merge_change_sets: FAIL
+
+- name: Planner cleanup cannot delete reviewed deployment change sets
+  input:
+      Resources:
+          Planner:
+              Properties:
+                  Policies:
+                      - PolicyName: PrepareExistingStacks
+                        PolicyDocument:
+                            Statement:
+                                - Sid: CleanupPreMergeChangeSets
+                                  Effect: Allow
+                                  Action: cloudformation:DeleteChangeSet
+                                  Resource: { Ref: StackArns }
+                                  Condition:
+                                      StringLike:
+                                          cloudformation:ChangeSetName:
+                                              - Fn::Sub: 'github-${Environment}-*'
+                                              - Fn::Sub: 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/github-${Environment}-*/*'
+  expectations:
+      rules:
+          planner_cleanup_only_deletes_pre_merge_change_sets: FAIL
+
+- name: Planner cleanup cannot acquire execution permissions
+  input:
+      Resources:
+          Planner:
+              Properties:
+                  Policies:
+                      - PolicyName: PrepareExistingStacks
+                        PolicyDocument:
+                            Statement:
+                                - Sid: CleanupPreMergeChangeSets
+                                  Effect: Allow
+                                  Action:
+                                      - cloudformation:DeleteChangeSet
+                                      - cloudformation:ExecuteChangeSet
+                                  Resource: { Ref: StackArns }
+                                  Condition: *pre_merge_names
+  expectations:
+      rules:
+          planner_cleanup_only_deletes_pre_merge_change_sets: FAIL
