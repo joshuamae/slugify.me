@@ -187,6 +187,12 @@ alarm thresholds, notification tests, cache-related diagnostic limits, logging
 retention, budget verification, and the monthly review procedure. The runbook
 includes a dated planning estimate covering both environments and release storage.
 
+Use [Rehearse recovery from a missing staging asset](docs/aws-staging-failure-exercise.md)
+for the bounded failure procedure, cache invalidation, recovery, and evidence
+requirements. The [2026-09-16 incident report](docs/aws-incident-2026-09-16.md)
+records the execution and monitoring findings. Keep the controlled failure
+exercise separate from a notification-only test or a successful-release rollback.
+
 Print the estimate, or summarize a saved Cost Explorer response, with:
 
 ```sh
@@ -1293,17 +1299,22 @@ exclude archive retrieval, extraction, queue time, and approval time.
 - The previous production archive was checked against its recorded SHA-256 and registered with a manifest as an explicit rollback candidate
 - Production's current archive passed all 40 file and route checks after the policy update and archive registration
 
-Production's `previous` reference remains `null`: its first publication through
-the new workflow initialized only `active`. Registering an older archive does
-not change this history. A successful publication of a different release moves
-the existing active release to `previous`; restoring the current release alone
-does not fill that field. Keep the imported candidate's release ID available for
-explicit selection until then. Do not edit the state object manually or use
-`adopt` on an initialized environment.
+Production's `previous` reference was `null` at the end of the 2026-09-15
+rehearsal. Subsequent successful publications populated it automatically.
+On 2026-09-16, both environments recorded active release
+`2882b3186feb-35117898185-1`, previous release
+`59360c0fd0e3-35107837010-1`, and `pending: null`.
+The [successful deployment](https://github.com/joshuamae/slugify.me/actions/runs/35117898185)
+verified all 40 file/route checks in staging at 15:52:09 UTC and production at
+15:54:46 UTC. This completes the remaining state criterion in
+[#57](https://github.com/joshuamae/slugify.me/issues/57).
 
-The production previous-release reference remains tracked in
-[#57](https://github.com/joshuamae/slugify.me/issues/57). The controlled failure
-exercise remains [#66](https://github.com/joshuamae/slugify.me/issues/66).
+Registering an older archive does not change active/previous history. A successful
+publication of a different release moves the existing active release to
+`previous`; restoring the current release preserves the existing previous
+reference. Do not edit state manually or use `adopt` on an initialized environment.
+See the separate [controlled failure exercise](docs/aws-staging-failure-exercise.md)
+and [incident report](docs/aws-incident-2026-09-16.md) for #66.
 
 #### Recover an interrupted operation
 
