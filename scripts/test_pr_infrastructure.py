@@ -282,6 +282,34 @@ class PullRequestInfrastructureTests(unittest.TestCase):
             preflight.plan(self.directory, "staging", "100-1")
         calls.assert_not_called()
 
+    def test_prepare_applies_monitoring_guard_to_a_renamed_monitoring_template(self):
+        """Pointing the monitoring stack at another file cannot skip its Guard rules."""
+        config = preflight.trusted_config()
+        config["production"] = [{**item, "template": "infra/monitoring-v2.yaml"}
+                                if item["template"] == "infra/monitoring.yaml" else item
+                                for item in config["production"]]
+        self.bundle(config)
+        credentials = {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
+                       "AWS_WEB_IDENTITY_TOKEN_FILE", "GH_TOKEN", "GITHUB_TOKEN"}
+        environment = {key: value for key, value in os.environ.items() if key not in credentials}
+        with patch.dict(os.environ, environment, clear=True), \
+                patch.object(preflight, "parse_template",
+                             return_value={"Resources": {"Example": {"Type": "AWS::S3::Bucket"}}}), \
+                patch.object(preflight, "run_validator") as validators:
+            preflight.prepare(self.directory)
+        guard = [call.args[0] for call in validators.call_args_list if call.args[1] == "cfn-guard"]
+        self.assertEqual([command[-1] for command in guard],
+                         [str(self.directory / preflight.prepared_path("infra/monitoring-v2.yaml"))])
+
+    def test_deployment_races_explain_rerunning_the_checks(self):
+        """A concurrent deployment is named instead of looking like a template failure."""
+        for error in [RuntimeError("cloudformation describe-change-set: An error occurred (ChangeSetNotFound)"),
+                      ValueError("static-site-production is not ready: UPDATE_IN_PROGRESS")]:
+            with self.subTest(error=error):
+                self.assertIn("Rerun the PR checks", str(preflight.with_deployment_hint(error)))
+        unrelated = ValueError("Template format error")
+        self.assertIs(preflight.with_deployment_hint(unrelated), unrelated)
+
     def test_failure_output_cannot_inject_workflow_commands(self):
         """Candidate-derived errors stay one escaped annotation line."""
         error = ValueError("bad 100%\n::add-mask::secret\r\n::set-output name=x::y")
