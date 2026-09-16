@@ -1,9 +1,9 @@
 AWSTemplateFormatVersion: '2010-09-09'
 
 Description: >-
-    CloudFront request and error alarms for staging and production, delivered
-    through one encrypted email topic. Deploy in us-east-1. Uses default
-    CloudFront metrics and does not collect visitor access logs.
+    CloudFront request and error alarms for staging and production, with email
+    limited to production errors and their recovery transitions. Uses one
+    encrypted topic and default metrics without collecting visitor access logs.
 
 Metadata:
     AWSToolsMetrics:
@@ -110,7 +110,7 @@ Resources:
         Type: AWS::SNS::Topic
         Metadata:
             com.aws.cloudformation.Context:
-                why: Share one encrypted notification channel across both environments
+                why: Preserve alarm publications while the email subscription selects actionable production events
                 must:
                     - Keep recipient addresses out of committed parameters and reports
         Properties:
@@ -155,10 +155,26 @@ Resources:
 
     AlarmEmailSubscription:
         Type: AWS::SNS::Subscription
+        Metadata:
+            com.aws.cloudformation.Context:
+                why: Keep staging verification, traffic warnings and initial OK transitions out of the operator inbox
+                must:
+                    - Match CloudWatch JSON message bodies, not absent message attributes
+                    - Email production error alarms and only ALARM-to-OK recovery transitions
+                    - Preserve the existing topic and recipient to update the confirmed subscription in place
         Properties:
             TopicArn: !Ref AlarmTopic
             Protocol: email
             Endpoint: !Ref AlertEmail
+            FilterPolicyScope: MessageBody
+            FilterPolicy:
+                AlarmName:
+                    - !Sub '${AWS::StackName}-production-4xx'
+                    - !Sub '${AWS::StackName}-production-5xx'
+                $or:
+                    - NewStateValue: [ALARM]
+                    - NewStateValue: [OK]
+                      OldStateValue: [ALARM]
 
     ProductionRequests:
         Type: AWS::CloudWatch::Alarm

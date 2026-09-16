@@ -333,3 +333,124 @@
   expectations:
       rules:
           service_publishing_is_scoped: FAIL
+
+- name: Email accepts production errors and recovery from ALARM only
+  input:
+      Resources:
+          AlarmEmailSubscription:
+              Type: AWS::SNS::Subscription
+              Properties:
+                  FilterPolicyScope: MessageBody
+                  FilterPolicy: &incident_filter
+                      AlarmName: &production_error_names
+                          - Fn::Sub: '${AWS::StackName}-production-4xx'
+                          - Fn::Sub: '${AWS::StackName}-production-5xx'
+                      $or: &incident_states
+                          - NewStateValue: [ALARM]
+                          - NewStateValue: [OK]
+                            OldStateValue: [ALARM]
+  expectations:
+      rules:
+          email_filters_production_incidents: PASS
+
+- name: Email rejects an unfiltered subscription
+  input:
+      Resources:
+          AlarmEmailSubscription:
+              Type: AWS::SNS::Subscription
+              Properties:
+                  Protocol: email
+  expectations:
+      rules:
+          email_filters_production_incidents: FAIL
+
+- name: Email rejects filtering absent CloudWatch message attributes
+  input:
+      Resources:
+          AlarmEmailSubscription:
+              Type: AWS::SNS::Subscription
+              Properties:
+                  FilterPolicyScope: MessageAttributes
+                  FilterPolicy: *incident_filter
+  expectations:
+      rules:
+          email_filters_production_incidents: FAIL
+
+- name: Email rejects staging alarms in the production allowlist
+  input:
+      Resources:
+          AlarmEmailSubscription:
+              Type: AWS::SNS::Subscription
+              Properties:
+                  FilterPolicyScope: MessageBody
+                  FilterPolicy:
+                      AlarmName:
+                          - Fn::Sub: '${AWS::StackName}-production-4xx'
+                          - Fn::Sub: '${AWS::StackName}-production-5xx'
+                          - Fn::Sub: '${AWS::StackName}-staging-4xx'
+                      $or: *incident_states
+  expectations:
+      rules:
+          email_filters_production_incidents: FAIL
+
+- name: Email rejects initial OK notifications
+  input:
+      Resources:
+          AlarmEmailSubscription:
+              Type: AWS::SNS::Subscription
+              Properties:
+                  FilterPolicyScope: MessageBody
+                  FilterPolicy:
+                      AlarmName: *production_error_names
+                      $or:
+                          - NewStateValue: [ALARM]
+                          - NewStateValue: [OK]
+  expectations:
+      rules:
+          email_filters_production_incidents: FAIL
+
+- name: Email rejects losing production 5xx coverage
+  input:
+      Resources:
+          AlarmEmailSubscription:
+              Type: AWS::SNS::Subscription
+              Properties:
+                  FilterPolicyScope: MessageBody
+                  FilterPolicy:
+                      AlarmName:
+                          - Fn::Sub: '${AWS::StackName}-production-4xx'
+                      $or: *incident_states
+  expectations:
+      rules:
+          email_filters_production_incidents: FAIL
+
+- name: Email rejects losing recovery coverage
+  input:
+      Resources:
+          AlarmEmailSubscription:
+              Type: AWS::SNS::Subscription
+              Properties:
+                  FilterPolicyScope: MessageBody
+                  FilterPolicy:
+                      AlarmName: *production_error_names
+                      NewStateValue: [ALARM]
+  expectations:
+      rules:
+          email_filters_production_incidents: FAIL
+
+- name: Email rejects an unrestricted OR branch
+  input:
+      Resources:
+          AlarmEmailSubscription:
+              Type: AWS::SNS::Subscription
+              Properties:
+                  FilterPolicyScope: MessageBody
+                  FilterPolicy:
+                      $or:
+                          - AlarmName: *production_error_names
+                          - NewStateValue: [ALARM]
+                          - NewStateValue: [OK]
+                            OldStateValue: [ALARM]
+  expectations:
+      rules:
+          email_filters_production_incidents: FAIL

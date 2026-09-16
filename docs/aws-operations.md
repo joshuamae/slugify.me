@@ -19,7 +19,8 @@ custom dashboard. See [CloudFront monitoring](https://docs.aws.amazon.com/Amazon
 ### Alarm thresholds
 
 All alarms require two breaching five-minute periods out of the most recent
-three. Both ALARM and OK state changes notify the confirmed operator address.
+three. All six publish ALARM and OK state changes to the encrypted SNS topic;
+the email subscription filters which publications reach the operator inbox.
 
 | Alarm          | Production                         | Staging                          | First response                                                               |
 | -------------- | ---------------------------------- | -------------------------------- | ---------------------------------------------------------------------------- |
@@ -42,13 +43,43 @@ an outage. Existing deployment and rollback workflows verify pages and required
 assets, but run only during those operations. This stack does not add a scheduled
 synthetic browser check or test browser JavaScript between deployments.
 
+### Choose which alerts reach email
+
+The repository defines this routing in `AlarmEmailSubscription`, using a filter
+on the JSON message body from CloudWatch. It takes effect after the monitoring
+stack update is deployed.
+
+| Event                                                          | Email behavior                                                         | Where to review                      |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------- | ------------------------------------ |
+| Production 4xx or 5xx enters ALARM                             | Send an alert, including when the previous state was INSUFFICIENT_DATA | Inbox and CloudWatch alarm history   |
+| Production 4xx or 5xx changes from ALARM to OK                 | Send a recovery message                                                | Inbox and CloudWatch alarm history   |
+| Production 4xx or 5xx enters OK from any other state           | Suppress the startup or routine OK message                             | CloudWatch alarm history             |
+| Any staging alarm or either request-volume alarm changes state | Suppress email                                                         | CloudWatch metrics and alarm history |
+| Existing account budget reaches a notification threshold       | Keep the existing budget email behavior                                | Inbox and AWS Budgets                |
+
+The filter allows only the exact `${StackName}-production-4xx` and
+`${StackName}-production-5xx` alarm names. It accepts `NewStateValue=ALARM`, or
+`NewStateValue=OK` with `OldStateValue=ALARM`. Recovery filtering checks the
+previous alarm state; it does not establish that an earlier alert reached the
+inbox. Production errors can still generate repeated emails if their alarm
+state repeatedly changes.
+
+Review staging alarms after deployments and request-volume alarms during the
+monthly cost review. They retain their thresholds, metric evaluation, actions
+and history, but no digest or alternative notification channel is created.
+The existing account budget is separate from this subscription filter.
+
+SNS can take up to 15 minutes to apply a new or changed filter. See
+[SNS filter policies](https://docs.aws.amazon.com/sns/latest/dg/sns-subscription-filter-policies.html)
+and the [CloudWatch notification schema](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/Notify_Users_Alarm_Changes.html#AlarmNotificationSchema).
+
 ### Deploy or update monitoring
 
 Run commands from the repository root with AWS CLI access. Set `AWS_PROFILE` to
 your chosen signed-in profile. Use the distribution IDs from the hosting stack
 outputs. Keep the email address and account-specific parameter files out of Git.
 
-1. Review `infra/monitoring.yaml` and its thresholds
+1. Review `infra/monitoring.yaml`, its thresholds and the email filter
 2. Validate the template and security rules
 
     ```sh
@@ -89,56 +120,103 @@ outputs. Keep the email address and account-specific parameter files out of Git.
       --stack-name static-site-monitoring
     ```
 
-5. Confirm the SNS subscription in the operator inbox and perform the delivery test below
+5. Confirm a new SNS subscription in the operator inbox, verify the deployed filter and allow up to 15 minutes for it to take effect before testing delivery
 
 Expected result: six alarms with actions enabled, a confirmed email subscription,
-and a successful notification test. CloudFormation completion alone does not
-confirm the email subscription or prove delivery.
+and the email routing described above. CloudFormation completion alone does not
+confirm the email subscription or prove delivery. Production deployment
+verification checks the six alarms' destinations and the subscription's topic,
+confirmation, email protocol and exact filter configuration. A delivery test
+provides separate evidence that messages reach the inbox.
 
 For later changes, use a new change-set name and `--change-set-type UPDATE`.
 Preserve every existing parameter with `UsePreviousValue=true` except the values
 you intentionally change. Use the `stack-update-complete` waiter after execution.
 Do not pass masked `NoEcho` values back as new parameter values.
 
+For this existing repository, use the reviewed
+[GitHub Actions deployment](infrastructure-delivery.md) for permanent changes.
+Keep alarm actions and subscription filtering in CloudFormation. If the live
+configuration differs, review the difference and deploy the intended template
+through a new change set; changing only the console or CLI settings leaves the
+repository out of sync. The filter update does not require different thresholds
+or existing stack parameter values.
+
 The KMS key supports CloudWatch publishing through an account- and alarm-scoped
 key policy. The AWS-managed SNS key cannot be customized for that service grant.
 The topic policy also limits CloudWatch publishing to this stack's alarms.
 
+### Verify the deployed email filter
+
+1. Find `AlarmTopicArn` in the monitoring stack's outputs and the physical resource ID of `AlarmEmailSubscription` in its resources
+2. Confirm that the subscription has a real ARN, not `PendingConfirmation`
+3. Inspect its attributes with the following command, replacing `SUBSCRIPTION_ARN`
+
+    ```sh
+    aws sns get-subscription-attributes --region us-east-1 \
+      --subscription-arn SUBSCRIPTION_ARN \
+      --query 'Attributes.{PendingConfirmation:PendingConfirmation,TopicArn:TopicArn,Protocol:Protocol,FilterPolicyScope:FilterPolicyScope,FilterPolicy:FilterPolicy}'
+    ```
+
+4. Check that `PendingConfirmation` is `false`, `Protocol` is `email`, `TopicArn` matches the stack output, and `FilterPolicyScope` is `MessageBody`
+5. Compare the decoded `FilterPolicy` with `AlarmEmailSubscription.Properties.FilterPolicy` in the template, substituting the deployed stack name
+
+Expected result: only the two exact production error alarm names are allowed,
+with ALARM messages accepted from any previous state and OK messages accepted
+only after ALARM. A missing filter, a broader alarm name match or a
+`MessageAttributes` scope does not provide the intended routing.
+
 ### Test notification delivery
 
-This test changes only a staging alarm's state. It does not test whether real
-errors cross the threshold or fulfill the controlled failure exercise in #66.
+Run this test only when the operator has agreed to receive clearly labeled test
+emails. Use an authorized publisher with `sns:Publish` on the topic and the
+required permissions for its encryption key. The test publishes synthetic JSON
+messages directly to SNS; it does not change alarm state, simulate an outage or
+prove that CloudWatch can detect and publish a real failure. Do not force a
+production alarm into ALARM to test email.
 
-1. Confirm that the email subscription has a real subscription ARN, not `PendingConfirmation`
-2. Record the alarm's initial state and ensure no real staging incident is active
-3. Trigger a clearly labeled test and inspect the action history
-
-    ```sh
-    aws cloudwatch set-alarm-state --region us-east-1 \
-      --alarm-name static-site-monitoring-staging-requests \
-      --state-value ALARM \
-      --state-reason 'TEST ONLY: notification delivery check; no website outage'
-    aws cloudwatch describe-alarm-history --region us-east-1 \
-      --alarm-name static-site-monitoring-staging-requests \
-      --history-item-type Action
-    ```
-
-4. Confirm the test email arrived, then end the test
+1. Verify the deployed filter above and wait at least 15 minutes after its last update
+2. Replace `TOPIC_ARN` and the example stack name in the following command with the deployed values, then publish the labeled production 4xx test
 
     ```sh
-    aws cloudwatch set-alarm-state --region us-east-1 \
-      --alarm-name static-site-monitoring-staging-requests \
-      --state-value OK \
-      --state-reason 'TEST COMPLETE: resume normal metric evaluation'
+    aws sns publish --region us-east-1 \
+      --topic-arn TOPIC_ARN \
+      --subject 'TEST ONLY: notification filter check; no website outage' \
+      --message '{"AlarmName":"static-site-monitoring-production-4xx","NewStateValue":"ALARM","OldStateValue":"OK","NewStateReason":"TEST ONLY: synthetic notification; no website outage"}'
     ```
 
-5. Record the UTC timestamp, publish-action result, recipient confirmation, and final state
+3. Repeat with the message fields below, keeping the test label in every subject and message
 
-CloudWatch can resume normal evaluation before the manual reset. A successful
-publish action proves acceptance by SNS; recipient confirmation proves inbox
-delivery. If no email arrives, check subscription confirmation, spam filtering,
-alarm actions, and KMS/topic policy failures in alarm history. Do not weaken the
-key policy to make the test pass.
+    | Alarm name suffix                                  | NewStateValue   | OldStateValue               | Expected email |
+    | -------------------------------------------------- | --------------- | --------------------------- | -------------- |
+    | `production-4xx` or `production-5xx`               | `ALARM`         | `OK` or `INSUFFICIENT_DATA` | Delivered      |
+    | `production-4xx` or `production-5xx`               | `OK`            | `ALARM`                     | Delivered      |
+    | `production-4xx` or `production-5xx`               | `OK`            | `INSUFFICIENT_DATA`         | Filtered       |
+    | `staging-4xx`, `staging-5xx` or `staging-requests` | `ALARM` or `OK` | `OK` or `ALARM`             | Filtered       |
+    | `production-requests`                              | `ALARM` or `OK` | `OK` or `ALARM`             | Filtered       |
+
+4. Record UTC timestamps, message IDs, the cases tested and recipient confirmation of the matching messages
+5. Review SNS delivery and filtering metrics over the same interval, accounting for any other publications, and record any unexpected delivery or failure
+
+Expected result: the recipient receives only the labeled production error and
+recovery messages. SNS acceptance alone does not prove delivery, and absence
+from an inbox alone does not prove filtering. Use successful matching deliveries,
+the deployed filter and SNS metrics together. This remains separate from the
+controlled failure exercise in #66 and its CloudWatch action evidence.
+
+The former staging `set-alarm-state` test now expects no email. It can check
+CloudWatch publication and negative filtering, but cannot demonstrate delivery
+to the inbox. Preserve the historical test evidence below as evidence of the
+configuration that was active then.
+
+If a matching test does not arrive, check confirmation, spam filtering, the
+exact alarm name and state fields, `MessageBody` scope and the 15-minute
+propagation window. Inspect SNS delivery failures and, for real alarms,
+CloudWatch action history for KMS or topic-policy errors. An access denial on
+`GetSubscriptionAttributes` requires checking the production execution role's
+existing topic ARN scope. Do not weaken the filter, topic policy or key
+policy to make a test pass. See [SNS monitoring](https://docs.aws.amazon.com/sns/latest/dg/sns-monitoring-using-cloudwatch.html)
+and [SNS publisher encryption permissions](https://docs.aws.amazon.com/sns/latest/dg/sns-key-management.html).
 
 ### Investigate an alarm and capture exercise evidence
 
@@ -211,10 +289,11 @@ Sources: [CloudWatch retention](https://docs.aws.amazon.com/AmazonCloudWatch/lat
 [CloudTrail event history](https://docs.aws.amazon.com/awscloudtrail/latest/userguide/view-cloudtrail-events.html),
 and [CloudFront logging costs](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/standard-logging.html).
 
-### Verification on 2026-09-16
+### Historical verification before email filtering on 2026-09-16
 
-The monitoring stack deployed successfully. The owner confirmed its SNS
-subscription and receipt of the test alarm. CloudWatch recorded successful
+Before the email filter was added, the monitoring stack deployed successfully.
+The owner confirmed its SNS subscription and receipt of the test alarm.
+CloudWatch recorded successful
 ALARM publication at 13:41:01 UTC and recovery publication at 13:41:24 UTC;
 all six alarms subsequently reached OK. This establishes notification delivery,
 not detection of a real hosting failure. See the separate
@@ -266,8 +345,12 @@ checked on 2026-09-16, before free allowances, promotional credits or tax:
 | Four cost-review API requests                        |                           0.040000 |
 | Total                                                |                       **4.100150** |
 
-This leaves $5.899850 of the $10 account budget for other charges under these
-assumptions. It is a planning estimate, not a maximum. Global viewer regions can
+This baseline leaves $5.899850 of the $10 account budget for other charges under
+these assumptions. It predates the email filter and excludes SNS payload
+scanning charges. SNS charges for scanning both filtered and delivered messages,
+with a minimum of 1 KB per message; include that usage in the next cost review.
+See [SNS message filtering pricing](https://aws.amazon.com/sns/pricing/).
+It is a planning estimate, not a maximum. Global viewer regions can
 cost more than the US rate. The first and second automatic KMS key rotations
 each add $1/month; revisit the estimate before the first annual rotation.
 Domain registration stays with the existing registrar and is outside this AWS

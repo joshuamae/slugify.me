@@ -231,7 +231,9 @@ for how the requested duration and role maximum work together.
 - Application rollback restores website content only; it does not revert infrastructure
 - Infrastructure plans and verification evidence are retained as workflow artifacts
 - Production verification requires six enabled alarms with the monitoring stack's
-  `AlarmTopicArn` in both `AlarmActions` and `OKActions`
+  `AlarmTopicArn` in both `AlarmActions` and `OKActions`, plus a confirmed email
+  subscription on that topic with the exact production-error filter and
+  `MessageBody` scope described in the [monitoring runbook](aws-operations.md#verify-the-deployed-email-filter)
 
 ## Troubleshooting
 
@@ -243,6 +245,7 @@ for how the requested duration and role maximum work together.
 | Requested session duration exceeds the role maximum | Update the existing infrastructure roles before retrying the workflow                                               |
 | Staging bootstrap requires `StagingAuthSecretArn`   | Set the authentication secret ARN on the staging hosting stack, then regenerate the bootstrap parameters            |
 | Monitoring alarms fail destination verification     | Check that all six enabled alarms include the monitoring stack's `AlarmTopicArn` in both alarm and recovery actions |
+| Monitoring subscription fails verification          | Follow the [deployed email filter checks](aws-operations.md#verify-the-deployed-email-filter)                       |
 | AWS CLI does not recognize `describe-events`        | Update AWS CLI v2 before running the deployment helper                                                              |
 | Plan changed while approval was pending             | Inspect the live stack, then start a new workflow run from current `main`                                           |
 | Rerunning only failed jobs rejects the plan         | Start a new complete run; plans are bound to their original run attempt                                             |
