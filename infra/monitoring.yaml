@@ -1,0 +1,454 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >-
+    CloudFront request and error alarms for staging and production, delivered
+    through one encrypted email topic. Deploy in us-east-1. Uses default
+    CloudFront metrics and does not collect visitor access logs.
+
+Metadata:
+    AWSToolsMetrics:
+        AWSAgentToolkit: aws-cloudformation@2
+    com.aws.cloudformation.Context:
+        ref: docs/aws-operations.md
+        must:
+            - Deploy in us-east-1 because CloudFront publishes global metrics there
+            - Keep hosting, application releases, and the existing account budget independent
+
+Parameters:
+    ProductionDistributionId:
+        Type: String
+        AllowedPattern: '[A-Z0-9]+'
+    StagingDistributionId:
+        Type: String
+        AllowedPattern: '[A-Z0-9]+'
+    AlertEmail:
+        Type: String
+        NoEcho: true
+        AllowedPattern: '[^\s@]+@[^\s@]+\.[^\s@]+'
+        Description: Existing operator address; confirm the SNS subscription email
+    ProductionRequestThreshold:
+        Type: Number
+        Default: 1000
+        MinValue: 1
+        Description: Requests per five minutes, in two of three periods
+    StagingRequestThreshold:
+        Type: Number
+        Default: 500
+        MinValue: 1
+        Description: Requests per five minutes, in two of three periods
+    MinimumErrorRequests:
+        Type: Number
+        Default: 20
+        MinValue: 1
+        Description: Minimum requests in each five-minute period before error alarms evaluate
+    Production4xxThreshold:
+        Type: Number
+        Default: 10
+        MinValue: 0
+        MaxValue: 100
+    Staging4xxThreshold:
+        Type: Number
+        Default: 50
+        MinValue: 0
+        MaxValue: 100
+        Description: Higher threshold accommodates expected unauthorized staging requests
+    Error5xxThreshold:
+        Type: Number
+        Default: 5
+        MinValue: 0
+        MaxValue: 100
+
+Rules:
+    CloudFrontMetricsRegion:
+        Assertions:
+            - Assert: !Equals [!Ref AWS::Region, us-east-1]
+              AssertDescription: CloudFront alarms must be created in us-east-1
+
+Resources:
+    AlarmKey:
+        Type: AWS::KMS::Key
+        DeletionPolicy: Retain
+        UpdateReplacePolicy: Retain
+        Metadata:
+            com.aws.cloudformation.Context:
+                why: Encrypt SNS notifications with a key whose policy allows CloudWatch publishing
+                must:
+                    - Restrict CloudWatch to this account and this stack's alarms
+                    - Retain the key on teardown; review retained-key charges separately
+        Properties:
+            Description: !Sub '${AWS::StackName} alarm notification encryption'
+            EnableKeyRotation: true
+            KeyPolicy:
+                Version: '2012-10-17'
+                Statement:
+                    - Sid: EnableAccountAdministration
+                      Effect: Allow
+                      Principal:
+                          AWS: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:root'
+                      Action: kms:*
+                      Resource: '*'
+                    - Sid: AllowCloudWatchAlarmEncryption
+                      Effect: Allow
+                      Principal:
+                          Service: cloudwatch.amazonaws.com
+                      Action:
+                          - kms:GenerateDataKey
+                          - kms:Decrypt
+                      Resource: '*'
+                      Condition:
+                          StringEquals:
+                              aws:SourceAccount: !Ref AWS::AccountId
+                          ArnLike:
+                              aws:SourceArn: !Sub 'arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-*'
+            Tags:
+                - Key: Project
+                  Value: static-site
+                - Key: Environment
+                  Value: shared
+
+    AlarmTopic:
+        Type: AWS::SNS::Topic
+        Metadata:
+            com.aws.cloudformation.Context:
+                why: Share one encrypted notification channel across both environments
+                must:
+                    - Keep recipient addresses out of committed parameters and reports
+        Properties:
+            KmsMasterKeyId: !GetAtt AlarmKey.Arn
+            Tags:
+                - Key: Project
+                  Value: static-site
+                - Key: Environment
+                  Value: shared
+
+    AlarmTopicPolicy:
+        Type: AWS::SNS::TopicPolicy
+        Metadata:
+            com.aws.cloudformation.Context:
+                why: Permit only this stack's CloudWatch alarms to publish service notifications
+                must:
+                    - Require secure transport and scoped service publishing
+        Properties:
+            Topics: [!Ref AlarmTopic]
+            PolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                    - Sid: AllowCloudWatchAlarms
+                      Effect: Allow
+                      Principal:
+                          Service: cloudwatch.amazonaws.com
+                      Action: sns:Publish
+                      Resource: !Ref AlarmTopic
+                      Condition:
+                          StringEquals:
+                              aws:SourceAccount: !Ref AWS::AccountId
+                          ArnLike:
+                              aws:SourceArn: !Sub 'arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-*'
+                    - Sid: DenyInsecureTransport
+                      Effect: Deny
+                      Principal: '*'
+                      Action: sns:Publish
+                      Resource: !Ref AlarmTopic
+                      Condition:
+                          Bool:
+                              aws:SecureTransport: 'false'
+
+    AlarmEmailSubscription:
+        Type: AWS::SNS::Subscription
+        Properties:
+            TopicArn: !Ref AlarmTopic
+            Protocol: email
+            Endpoint: !Ref AlertEmail
+
+    ProductionRequests:
+        Type: AWS::CloudWatch::Alarm
+        DependsOn: AlarmTopicPolicy
+        Metadata:
+            com.aws.cloudformation.Context:
+                why: Detect sustained traffic spikes that can increase cost
+                must:
+                    - Treat missing traffic as non-breaching, not proof of availability
+        Properties:
+            AlarmName: !Sub '${AWS::StackName}-production-requests'
+            AlarmDescription: 'Sustained production request spike; inspect CloudFront metrics and budget. Runbook: docs/aws-operations.md'
+            Namespace: AWS/CloudFront
+            MetricName: Requests
+            Dimensions:
+                - Name: DistributionId
+                  Value: !Ref ProductionDistributionId
+                - Name: Region
+                  Value: Global
+            Statistic: Sum
+            Period: 300
+            EvaluationPeriods: 3
+            DatapointsToAlarm: 2
+            Threshold: !Ref ProductionRequestThreshold
+            ComparisonOperator: GreaterThanOrEqualToThreshold
+            TreatMissingData: notBreaching
+            AlarmActions: [!Ref AlarmTopic]
+            OKActions: [!Ref AlarmTopic]
+            Tags:
+                - Key: Project
+                  Value: static-site
+                - Key: Environment
+                  Value: production
+
+    StagingRequests:
+        Type: AWS::CloudWatch::Alarm
+        DependsOn: AlarmTopicPolicy
+        Metadata:
+            com.aws.cloudformation.Context:
+                why: Detect unexpected sustained staging traffic without alarming on a single deployment
+                must:
+                    - Keep staging and production metrics separate
+        Properties:
+            AlarmName: !Sub '${AWS::StackName}-staging-requests'
+            AlarmDescription: 'Sustained staging request spike; check deployments and unauthorized requests. Runbook: docs/aws-operations.md'
+            Namespace: AWS/CloudFront
+            MetricName: Requests
+            Dimensions:
+                - Name: DistributionId
+                  Value: !Ref StagingDistributionId
+                - Name: Region
+                  Value: Global
+            Statistic: Sum
+            Period: 300
+            EvaluationPeriods: 3
+            DatapointsToAlarm: 2
+            Threshold: !Ref StagingRequestThreshold
+            ComparisonOperator: GreaterThanOrEqualToThreshold
+            TreatMissingData: notBreaching
+            AlarmActions: [!Ref AlarmTopic]
+            OKActions: [!Ref AlarmTopic]
+            Tags:
+                - Key: Project
+                  Value: static-site
+                - Key: Environment
+                  Value: staging
+
+    Production4xx:
+        Type: AWS::CloudWatch::Alarm
+        DependsOn: AlarmTopicPolicy
+        Metadata:
+            com.aws.cloudformation.Context:
+                why: Detect sustained client or origin-access errors while filtering isolated bot requests
+                must:
+                    - Gate percentage alarms on a minimum request count
+        Properties:
+            AlarmName: !Sub '${AWS::StackName}-production-4xx'
+            AlarmDescription: 'Production 4xx errors; check valid page/asset paths, OAC and bucket policy. Runbook: docs/aws-operations.md'
+            Metrics:
+                - Id: requests
+                  ReturnData: false
+                  MetricStat:
+                      Metric:
+                          Namespace: AWS/CloudFront
+                          MetricName: Requests
+                          Dimensions:
+                              - Name: DistributionId
+                                Value: !Ref ProductionDistributionId
+                              - Name: Region
+                                Value: Global
+                      Period: 300
+                      Stat: Sum
+                - Id: errors
+                  ReturnData: false
+                  MetricStat:
+                      Metric:
+                          Namespace: AWS/CloudFront
+                          MetricName: 4xxErrorRate
+                          Dimensions:
+                              - Name: DistributionId
+                                Value: !Ref ProductionDistributionId
+                              - Name: Region
+                                Value: Global
+                      Period: 300
+                      Stat: Average
+                - Id: rate
+                  Expression: !Sub 'IF(requests >= ${MinimumErrorRequests}, errors, 0)'
+                  ReturnData: true
+            EvaluationPeriods: 3
+            DatapointsToAlarm: 2
+            Threshold: !Ref Production4xxThreshold
+            ComparisonOperator: GreaterThanOrEqualToThreshold
+            TreatMissingData: notBreaching
+            AlarmActions: [!Ref AlarmTopic]
+            OKActions: [!Ref AlarmTopic]
+            Tags:
+                - Key: Project
+                  Value: static-site
+                - Key: Environment
+                  Value: production
+
+    Staging4xx:
+        Type: AWS::CloudWatch::Alarm
+        DependsOn: AlarmTopicPolicy
+        Metadata:
+            com.aws.cloudformation.Context:
+                why: Detect sustained staging errors with allowance for expected authentication failures
+                must:
+                    - Distinguish expected 401 responses from failures on authenticated requests
+        Properties:
+            AlarmName: !Sub '${AWS::StackName}-staging-4xx'
+            AlarmDescription: 'Staging 4xx errors; distinguish expected 401s from authenticated page/asset failures. Runbook: docs/aws-operations.md'
+            Metrics:
+                - Id: requests
+                  ReturnData: false
+                  MetricStat:
+                      Metric:
+                          Namespace: AWS/CloudFront
+                          MetricName: Requests
+                          Dimensions:
+                              - Name: DistributionId
+                                Value: !Ref StagingDistributionId
+                              - Name: Region
+                                Value: Global
+                      Period: 300
+                      Stat: Sum
+                - Id: errors
+                  ReturnData: false
+                  MetricStat:
+                      Metric:
+                          Namespace: AWS/CloudFront
+                          MetricName: 4xxErrorRate
+                          Dimensions:
+                              - Name: DistributionId
+                                Value: !Ref StagingDistributionId
+                              - Name: Region
+                                Value: Global
+                      Period: 300
+                      Stat: Average
+                - Id: rate
+                  Expression: !Sub 'IF(requests >= ${MinimumErrorRequests}, errors, 0)'
+                  ReturnData: true
+            EvaluationPeriods: 3
+            DatapointsToAlarm: 2
+            Threshold: !Ref Staging4xxThreshold
+            ComparisonOperator: GreaterThanOrEqualToThreshold
+            TreatMissingData: notBreaching
+            AlarmActions: [!Ref AlarmTopic]
+            OKActions: [!Ref AlarmTopic]
+            Tags:
+                - Key: Project
+                  Value: static-site
+                - Key: Environment
+                  Value: staging
+
+    Production5xx:
+        Type: AWS::CloudWatch::Alarm
+        DependsOn: AlarmTopicPolicy
+        Metadata:
+            com.aws.cloudformation.Context:
+                why: Detect sustained server errors without enabling paid additional CloudFront metrics
+                must:
+                    - Use the default 5xxErrorRate metric with Average
+        Properties:
+            AlarmName: !Sub '${AWS::StackName}-production-5xx'
+            AlarmDescription: 'Production 5xx errors; check origin access, CloudFront function errors and AWS service health. Runbook: docs/aws-operations.md'
+            Metrics:
+                - Id: requests
+                  ReturnData: false
+                  MetricStat:
+                      Metric:
+                          Namespace: AWS/CloudFront
+                          MetricName: Requests
+                          Dimensions:
+                              - Name: DistributionId
+                                Value: !Ref ProductionDistributionId
+                              - Name: Region
+                                Value: Global
+                      Period: 300
+                      Stat: Sum
+                - Id: errors
+                  ReturnData: false
+                  MetricStat:
+                      Metric:
+                          Namespace: AWS/CloudFront
+                          MetricName: 5xxErrorRate
+                          Dimensions:
+                              - Name: DistributionId
+                                Value: !Ref ProductionDistributionId
+                              - Name: Region
+                                Value: Global
+                      Period: 300
+                      Stat: Average
+                - Id: rate
+                  Expression: !Sub 'IF(requests >= ${MinimumErrorRequests}, errors, 0)'
+                  ReturnData: true
+            EvaluationPeriods: 3
+            DatapointsToAlarm: 2
+            Threshold: !Ref Error5xxThreshold
+            ComparisonOperator: GreaterThanOrEqualToThreshold
+            TreatMissingData: notBreaching
+            AlarmActions: [!Ref AlarmTopic]
+            OKActions: [!Ref AlarmTopic]
+            Tags:
+                - Key: Project
+                  Value: static-site
+                - Key: Environment
+                  Value: production
+
+    Staging5xx:
+        Type: AWS::CloudWatch::Alarm
+        DependsOn: AlarmTopicPolicy
+        Metadata:
+            com.aws.cloudformation.Context:
+                why: Detect server errors during staging releases and controlled failure exercises
+                must:
+                    - Keep staging alarms actionable without changing production
+        Properties:
+            AlarmName: !Sub '${AWS::StackName}-staging-5xx'
+            AlarmDescription: 'Staging 5xx errors; check origin access and CloudFront function errors. Runbook: docs/aws-operations.md'
+            Metrics:
+                - Id: requests
+                  ReturnData: false
+                  MetricStat:
+                      Metric:
+                          Namespace: AWS/CloudFront
+                          MetricName: Requests
+                          Dimensions:
+                              - Name: DistributionId
+                                Value: !Ref StagingDistributionId
+                              - Name: Region
+                                Value: Global
+                      Period: 300
+                      Stat: Sum
+                - Id: errors
+                  ReturnData: false
+                  MetricStat:
+                      Metric:
+                          Namespace: AWS/CloudFront
+                          MetricName: 5xxErrorRate
+                          Dimensions:
+                              - Name: DistributionId
+                                Value: !Ref StagingDistributionId
+                              - Name: Region
+                                Value: Global
+                      Period: 300
+                      Stat: Average
+                - Id: rate
+                  Expression: !Sub 'IF(requests >= ${MinimumErrorRequests}, errors, 0)'
+                  ReturnData: true
+            EvaluationPeriods: 3
+            DatapointsToAlarm: 2
+            Threshold: !Ref Error5xxThreshold
+            ComparisonOperator: GreaterThanOrEqualToThreshold
+            TreatMissingData: notBreaching
+            AlarmActions: [!Ref AlarmTopic]
+            OKActions: [!Ref AlarmTopic]
+            Tags:
+                - Key: Project
+                  Value: static-site
+                - Key: Environment
+                  Value: staging
+
+Outputs:
+    AlarmTopicArn:
+        Description: Encrypted alarm notification topic
+        Value: !Ref AlarmTopic
+    AlarmKeyArn:
+        Description: Retained encryption key; review its cost if the stack is removed
+        Value: !GetAtt AlarmKey.Arn
+    StagingDeliveryTestAlarm:
+        Description: Use only for a clearly labeled notification delivery test
+        Value: !Ref StagingRequests

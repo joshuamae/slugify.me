@@ -175,6 +175,28 @@ Netlify deployment is locked and retained for DNS rollback.
 Use the account's existing AWS budget. This template does not create or modify
 budgets. Budget notifications do not automatically stop AWS charges.
 
+### Monitor availability and review costs
+
+`infra/monitoring.yaml` defines CloudFront request and error alarms for staging
+and production, with encrypted email notifications. Deploy it separately in
+`us-east-1`. It uses default metrics and does not enable visitor access logs.
+
+See [Monitor AWS hosting and review monthly costs](docs/aws-operations.md) for
+alarm thresholds, notification tests, cache-related diagnostic limits, logging
+retention, budget verification, and the monthly review procedure. The runbook
+includes a dated planning estimate covering both environments and release storage.
+
+Print the estimate, or summarize a saved Cost Explorer response, with:
+
+```sh
+python3 scripts/review-aws-costs.py
+python3 scripts/review-aws-costs.py --costs /tmp/aws-monthly-costs.json
+```
+
+The helper uses Python's standard library and does not call AWS. CloudFront
+alarms depend on traffic; an OK state during a quiet period is not proof of
+availability. Deployment checks continue to verify pages and assets on release.
+
 ### Before you start
 
 Run commands from the repository root in Bash or Zsh. You need:
@@ -331,6 +353,7 @@ a strong random password prevents practical guessing against that digest.
      ' | aws secretsmanager create-secret \
        --region "$AWS_REGION" \
        --name "$SITE_STACK/access" \
+       --tags Key=Project,Value=static-site Key=Environment,Value=staging \
        --secret-string file:///dev/stdin \
        --query '{ARN:ARN,VersionId:VersionId}' \
        --output json
@@ -402,8 +425,9 @@ aws cloudformation describe-change-set \
 ```
 
 For a new stack, expect additions for the bucket, distribution, access policies,
-cache policy, URL function, staging response headers policy, and deployment role. An identity provider is also
-added if one does not already exist. Review the changes before continuing.
+URL function, staging response headers policy, and deployment role. The distribution
+uses AWS-managed cache policies. An identity provider is also added if one does
+not already exist. Review the changes before continuing.
 
 ### 5. Create the staging resources
 
@@ -666,6 +690,40 @@ Hashed asset names change when their contents change. Upload assets before HTML
 and keep previous hashed assets available so older pages and rollback releases
 can still load their dependencies. Upload-time headers are necessary; the
 template alone does not set these headers on S3 objects.
+
+#### CloudFront cache policies and the Free plan
+
+The distribution uses two AWS-managed cache policies:
+
+| Path | Managed policy | Behavior |
+| --- | --- | --- |
+| `/assets/*` | `CachingOptimized` | Cache hashed assets for up to one year using their upload-time headers |
+| Everything else | `CachingDisabled` | Fetch HTML and unversioned files from S3 on each request that reaches CloudFront |
+
+Both behaviors run the viewer-request function, preserving staging authentication
+and canonical hostname redirects. Staging also applies its `noindex` and browser
+`no-store` response headers to both behaviors. Disabling edge caching for HTML
+and unversioned files increases S3 requests; hashed assets remain cached.
+
+To resolve **You're using configuration not available in this tier: custom cache policies**:
+
+1. Follow **Update an existing stack** to create a change set with this template, preserving the stack's current parameters
+2. Confirm the change set modifies `Distribution` without replacement and removes `CachePolicy`; investigate any additional resource changes
+3. Execute the reviewed change set and wait for the stack update and CloudFront deployment to finish
+4. Verify page content, assets, redirects, and staging authentication, then retry Free plan enrollment in the CloudFront console
+
+Expected result: the distribution no longer uses a custom cache policy. Updating
+the template or publishing site files alone does not update the deployed distribution.
+
+The Free plan supports managed cache policies, but excludes custom response
+header policies too. Staging still uses `StagingResponseHeaders` to protect its
+browser caching and indexing behavior, so this cache-policy change alone does
+not make staging eligible for the Free plan. If enrollment reports another
+unsupported feature, review that feature separately. See
+[CloudFront pricing plan features](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/flat-rate-pricing-plan.html)
+and [AWS-managed cache policies](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/using-managed-cache-policies.html).
+
+#### Page URL handling
 
 The CloudFront function maps these URLs, including trailing-slash variants, to
 generated HTML:
@@ -1286,7 +1344,7 @@ permissions; operator cleanup additionally requires `s3:ListBucketVersions` and
 #### Troubleshoot cache and rollback checks
 
 - A `200` response can still contain stale content; compare its SHA-256 with the selected manifest
-- A warm CloudFront cache can hide an origin failure; complete an invalidation or use a never-requested object path before checking origin access, since this cache policy excludes query strings and a random query parameter does not bypass it
+- A warm CloudFront asset cache can hide an origin failure; complete an invalidation or use a never-requested object path before checking origin access, since the managed asset policy excludes query strings and a random query parameter does not bypass it
 - HTML and unversioned public files require revalidation; hashed assets use a one-year immutable cache policy
 - The script records status, MIME type, cache headers, CloudFront cache result, and content checks for every manifest file and each supported page route
 - Missing resources must return `403` or `404`; successful fallback HTML is a failure
