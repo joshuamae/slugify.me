@@ -6,6 +6,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import io
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -19,7 +20,8 @@ spec.loader.exec_module(preflight)
 HEAD = "a" * 40
 BASE = "b" * 40
 STACK_ID = "arn:aws:cloudformation:us-east-1:123456789012:stack/site/stack-id"
-CHANGE_SET = "arn:aws:cloudformation:us-east-1:123456789012:changeSet/github-staging-pr-12-100-1-0/new-id"
+CHANGE_SET_NAME = "premerge-staging-12-100-1-0"
+CHANGE_SET = f"arn:aws:cloudformation:us-east-1:123456789012:changeSet/{CHANGE_SET_NAME}/new-id"
 OLD_CHANGE_SET = "arn:aws:cloudformation:us-east-1:123456789012:changeSet/github-staging-old/old-id"
 
 
@@ -45,20 +47,24 @@ class PullRequestInfrastructureTests(unittest.TestCase):
         self.addCleanup(self.temporary.cleanup)
         self.directory = Path(self.temporary.name) / "candidate"
 
-    def bundle(self):
+    def bundle(self, config=None):
         """Construct the exact files that the trusted fetch/prepare stages emit."""
         self.directory.mkdir()
+        config = config or preflight.trusted_config()
         context = {"kind": preflight.KIND, "version": 1, "repository": "owner/site",
                    "pr": 12, "head": HEAD, "base": BASE, "files": {}}
-        for path in ["infra/deployments.json", *preflight.template_paths()]:
-            content = (preflight.ROOT / path).read_bytes()
+        for path in ["infra/deployments.json", *preflight.template_paths(config)]:
+            source = preflight.ROOT / path
+            content = (json.dumps(config).encode() if path.endswith(".json")
+                       else source.read_bytes() if source.exists()
+                       else (preflight.ROOT / "infra/site.yaml").read_bytes())
             target = self.directory / path
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(content)
             context["files"][path] = preflight.deployment.digest(content)
         (self.directory / "context.json").write_text(json.dumps(context))
         prepared = {"context": context, "templates": {}}
-        for path in preflight.template_paths():
+        for path in preflight.template_paths(config):
             content = json.dumps({"Resources": {"Example": {"Type": "AWS::S3::Bucket"}}}).encode()
             target = self.directory / preflight.prepared_path(path)
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -84,32 +90,62 @@ class PullRequestInfrastructureTests(unittest.TestCase):
                 api.assert_called_once_with("/repos/owner/site/pulls/12")
                 self.assertFalse(self.directory.exists())
 
+    @staticmethod
+    def file_reply(path, content):
+        return {"type": "file", "path": path, "encoding": "base64", "size": len(content),
+                "content": base64.b64encode(content).decode(),
+                "download_url": "https://attacker.invalid/execute-me"}
+
     def test_fetch_downloads_only_allowlisted_exact_head_data(self):
         """Ignore candidate download URLs and derive fork identity from the PR API."""
-        paths = ["infra/deployments.json", *preflight.template_paths()]
+        paths = ["infra/deployments.json", *preflight.template_paths(preflight.trusted_config())]
         replies = [pull_request()]
         for path in paths:
-            content = (preflight.ROOT / path).read_bytes()
-            replies.append({"type": "file", "path": path, "encoding": "base64", "size": len(content),
-                            "content": base64.b64encode(content).decode(),
-                            "download_url": "https://attacker.invalid/execute-me"})
+            replies.append(self.file_reply(path, (preflight.ROOT / path).read_bytes()))
         with patch.object(preflight, "github", side_effect=replies) as api:
             preflight.fetch("owner/site", 12, HEAD, BASE, self.directory)
         self.assertEqual([call.args[0] for call in api.call_args_list[1:]],
                          [f"/repos/contributor/site/contents/{path}?ref={HEAD}" for path in paths])
         self.assertEqual(preflight.load_context(self.directory)["head"], HEAD)
 
-    def test_fetch_rejects_changed_deployment_targets(self):
-        """A candidate config cannot select a new stack or local executable file."""
-        replies = [pull_request()]
-        for path in ["infra/deployments.json", *preflight.template_paths()]:
-            content = b'{"staging":[],"production":[]}' if path.endswith(".json") else (preflight.ROOT / path).read_bytes()
-            replies.append({"type": "file", "path": path, "encoding": "base64", "size": len(content),
-                            "content": base64.b64encode(content).decode()})
-        with patch.object(preflight, "github", side_effect=replies), \
-                self.assertRaisesRegex(ValueError, "deployment targets"):
+    def test_fetch_plans_new_targets_named_by_the_pull_request(self):
+        """A PR can add a stack and template without merging first."""
+        config = preflight.trusted_config()
+        config["staging"].append({"stack": "static-site-logs", "template": "infra/logs.yaml"})
+        paths = preflight.template_paths(config)
+        self.assertIn("infra/logs.yaml", paths)
+        replies = [pull_request(), self.file_reply("infra/deployments.json", json.dumps(config).encode())]
+        replies.extend(self.file_reply(path, b"Resources: {}") for path in paths)
+        with patch.object(preflight, "github", side_effect=replies) as api:
             preflight.fetch("owner/site", 12, HEAD, BASE, self.directory)
-        self.assertFalse(self.directory.exists())
+        self.assertIn(f"/repos/contributor/site/contents/infra/logs.yaml?ref={HEAD}",
+                      [call.args[0] for call in api.call_args_list])
+        self.assertEqual(preflight.candidate_targets(self.directory), config)
+        self.assertIn("infra/logs.yaml", preflight.load_context(self.directory)["files"])
+
+    def test_fetch_rejects_unsafe_deployment_targets_before_downloading_templates(self):
+        """A candidate config cannot name paths outside infra/ or ambiguous targets."""
+        valid = {"stack": "site", "template": "infra/site.yaml"}
+        cases = [
+            {"staging": [], "production": [valid]},
+            {"staging": [valid], "production": [valid], "extra": [valid]},
+            {"staging": [{**valid, "template": "infra/../scripts/deploy.yaml"}], "production": [valid]},
+            {"staging": [{**valid, "template": "/etc/passwd.yaml"}], "production": [valid]},
+            {"staging": [{**valid, "template": "infra/nested/site.yaml"}], "production": [valid]},
+            {"staging": [{**valid, "template": "infra/site.json"}], "production": [valid]},
+            {"staging": [{**valid, "stack": "bad name"}], "production": [valid]},
+            {"staging": [{**valid, "role": "admin"}], "production": [valid]},
+            {"staging": [valid, valid], "production": [valid]},
+            {"staging": [valid] * 11, "production": [valid]},
+        ]
+        for config in cases:
+            with self.subTest(config=config), \
+                    patch.object(preflight, "github", side_effect=[
+                        pull_request(), self.file_reply("infra/deployments.json", json.dumps(config).encode())]) as api, \
+                    self.assertRaisesRegex(ValueError, "deployment target|staging and production|Duplicate"):
+                preflight.fetch("owner/site", 12, HEAD, BASE, self.directory)
+            self.assertEqual(api.call_count, 2)
+            self.assertFalse(self.directory.exists())
 
     def test_candidate_or_prepared_tampering_stops_before_aws(self):
         """Hashes bind both the original proposed text and the parsed evidence."""
@@ -133,34 +169,45 @@ class PullRequestInfrastructureTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "symlinks"):
             preflight.load_context(self.directory)
 
-    def run_plan(self, no_op=True, event_error=False, wait_error=False):
+    def run_plan(self, no_op=True, event_error=False, wait_error=False, events=None, response=None,
+                 created=CHANGE_SET, error=None):
         """Emulate AWS while recording every operation and submitted parameter."""
         self.bundle()
-        response = {"StackId": STACK_ID, "Status": "FAILED" if no_op else "CREATE_COMPLETE",
-                    "ExecutionStatus": "UNAVAILABLE" if no_op else "AVAILABLE", "Changes": [],
-                    "StatusReason": preflight.deployment.NO_CHANGES[0] if no_op else ""}
+        response = response or {
+            "StackId": STACK_ID, "Status": "FAILED" if no_op else "CREATE_COMPLETE",
+            "ExecutionStatus": "UNAVAILABLE" if no_op else "AVAILABLE", "Changes": [],
+            "StatusReason": preflight.deployment.NO_CHANGES[0] if no_op else ""}
         def api(service, operation, **options):
             self.assertEqual(service, "cloudformation")
             if operation == "validate-template":
                 return {"Parameters": [{"ParameterKey": "AlertEmail"}]}
             if operation == "create-change-set":
-                return {"Id": CHANGE_SET}
-            if operation == "describe-events" and options.get("change_set_name") == CHANGE_SET and event_error:
-                raise RuntimeError("AccessDenied")
+                self.assertEqual(options["change_set_name"], CHANGE_SET_NAME)
+                return {"Id": created}
+            if operation == "describe-events" and options.get("change_set_name") == created:
+                if event_error:
+                    raise RuntimeError("AccessDenied")
+                return {"OperationEvents": events or []}
             return {}
+        if event_error or wait_error:
+            error = error or RuntimeError
         with patch.dict(os.environ, {"AWS_REGION": "us-east-1"}), \
                 patch.object(preflight.deployment, "checked_stack", return_value=stack()), \
                 patch.object(preflight.deployment, "wait_for", side_effect=RuntimeError("wait failed") if wait_error else None,
                              return_value=response), \
-                patch.object(preflight.deployment, "aws", side_effect=api) as calls:
-            if event_error or wait_error:
-                with self.assertRaises(RuntimeError):
+                patch.object(preflight.deployment, "aws", side_effect=api) as calls, \
+                patch("sys.stdout", new_callable=io.StringIO) as output:
+            if error:
+                with self.assertRaises(error) as raised:
                     preflight.plan(self.directory, "staging", "100-1")
-                result = None
+                result = raised.exception
             else:
                 result = preflight.plan(self.directory, "staging", "100-1")
+        self.output = output.getvalue()
         self.assertNotIn("execute-change-set", [call.args[1] for call in calls.call_args_list])
-        calls.assert_called_with("cloudformation", "delete-change-set", change_set_name=CHANGE_SET)
+        # Cleanup targets this preflight's own stack and name, not an ID returned by AWS.
+        calls.assert_called_with("cloudformation", "delete-change-set",
+                                 stack_name=STACK_ID, change_set_name=CHANGE_SET_NAME)
         return result, calls.call_args_list
 
     def test_no_op_still_probes_real_events_and_submits_original_yaml(self):
@@ -186,13 +233,79 @@ class PullRequestInfrastructureTests(unittest.TestCase):
         """A failed or interrupted wait does not leave a normal temporary plan."""
         self.run_plan(no_op=False, wait_error=True)
 
+    def test_validation_failure_names_each_finding_and_cleans_up(self):
+        """The raised error carries CloudFormation's reason, not only a generic failure."""
+        events = [{"EventType": "VALIDATION_ERROR", "ValidationFailureMode": "FAIL",
+                   "LogicalResourceId": "Bucket", "ValidationStatusReason": "Bucket name already exists"},
+                  {"EventType": "VALIDATION_ERROR", "ValidationFailureMode": "WARN",
+                   "LogicalResourceId": "Alarm", "ValidationStatusReason": "Threshold is unusual"}]
+        error, _ = self.run_plan(no_op=False, events=events, error=ValueError)
+        self.assertIn("Bucket: Bucket name already exists", str(error))
+        self.assertNotIn("Threshold is unusual", str(error))
+        self.assertIn("Threshold is unusual", self.output)
+
+    def test_unavailable_change_set_reports_the_aws_reason(self):
+        response = {"StackId": STACK_ID, "Status": "FAILED", "ExecutionStatus": "UNAVAILABLE",
+                    "StatusReason": "Template error: instance of Fn::GetAtt references undefined resource Missing"}
+        error, _ = self.run_plan(no_op=False, response=response, error=ValueError)
+        self.assertIn("undefined resource Missing", str(error))
+
+    def test_unexpected_change_set_id_still_deletes_the_preflight_change_set(self):
+        error, _ = self.run_plan(created="arn:aws:cloudformation:us-east-1:1:changeSet/other/id", error=ValueError)
+        self.assertIn("namespace", str(error))
+
+    def test_cleanup_failure_does_not_hide_the_planning_error(self):
+        self.bundle()
+        def api(service, operation, **options):
+            if operation == "create-change-set":
+                return {"Id": CHANGE_SET}
+            if operation == "delete-change-set":
+                raise RuntimeError("delete denied")
+            return {}
+        with patch.dict(os.environ, {"AWS_REGION": "us-east-1"}), \
+                patch.object(preflight.deployment, "checked_stack", return_value=stack()), \
+                patch.object(preflight.deployment, "wait_for", side_effect=RuntimeError("wait failed")), \
+                patch.object(preflight.deployment, "aws", side_effect=api), \
+                patch("sys.stderr", new_callable=io.StringIO) as errors, \
+                self.assertRaisesRegex(RuntimeError, "wait failed"):
+            preflight.plan(self.directory, "staging", "100-1")
+        self.assertIn("delete denied", errors.getvalue())
+
+    def test_unreadable_new_stack_explains_bootstrap(self):
+        config = preflight.trusted_config()
+        config["staging"] = [{"stack": "static-site-new", "template": "infra/site.yaml"}]
+        self.bundle(config)
+        with patch.dict(os.environ, {"AWS_REGION": "us-east-1"}), \
+                patch.object(preflight.deployment, "checked_stack", side_effect=RuntimeError("AccessDenied")), \
+                patch.object(preflight.deployment, "aws") as calls, \
+                self.assertRaisesRegex(RuntimeError, "new staging target.*planning role scope.*AccessDenied"):
+            preflight.plan(self.directory, "staging", "100-1")
+        calls.assert_not_called()
+
+    def test_failure_output_cannot_inject_workflow_commands(self):
+        """Candidate-derived errors stay one escaped annotation line."""
+        error = ValueError("bad 100%\n::add-mask::secret\r\n::set-output name=x::y")
+        line = preflight.annotation("AWS pre-merge plan (staging)", error)
+        self.assertNotIn("\n", line)
+        self.assertNotIn("\r", line)
+        self.assertTrue(line.startswith("::error title=AWS pre-merge plan (staging)::bad 100%25%0A::add-mask::"))
+        report = preflight.failure_report("staging", ValueError("```\n# heading"))
+        self.assertNotIn("```\n#", report.split("```text", 1)[1].rsplit("```", 1)[0])
+        with patch.dict(os.environ, {"GITHUB_ACTIONS": "true"}), \
+                patch("sys.stdout", new_callable=io.StringIO) as output:
+            preflight.print_untrusted("::error::spoofed")
+        lines = output.getvalue().splitlines()
+        self.assertRegex(lines[0], r"^::stop-commands::[0-9a-f]{32}$")
+        self.assertEqual(lines[1], "::error::spoofed")
+        self.assertEqual(lines[2], "::" + lines[0].rsplit("::", 1)[1] + "::")
+
 
 @unittest.skipUnless(importlib.util.find_spec("yaml"), "PyYAML is supplied by the infrastructure validator image")
 class CandidateParsingTests(unittest.TestCase):
     """Run in the existing credential-free validator image, with no new packages."""
 
     def test_current_templates_parse_as_inert_cloudformation_data(self):
-        for path in preflight.template_paths():
+        for path in preflight.template_paths(preflight.trusted_config()):
             with self.subTest(path=path):
                 parsed = preflight.parse_template((preflight.ROOT / path).read_bytes())
                 self.assertIn("Resources", parsed)
@@ -205,10 +318,23 @@ class CandidateParsingTests(unittest.TestCase):
             b"Resources: {Bad: {Type: 'Custom::Execute'}}",
             b"Resources: {Bad: {Type: 'AWS::CloudFormation::Stack', Properties: {TemplateURL: 'https://bad.invalid'}}}",
             b"Resources: {Bucket: {Type: 'AWS::S3::Bucket'}}\nMetadata: {TemplateURL: 'https://bad.invalid'}",
+            b"Resources: {Bad: {Type: 'AWS::CloudFormation::CustomResource'}}",
+            b"Resources: {Bad: {Type: 'AWS::Lambda::Function'}}",
+            b"Resources: {Bad: {Type: 'AWS::Serverless::Function'}}",
+            b"Resources: {Bad: {Type: 'Example::Network::VPC::MODULE'}}",
+            b"Resources: {Bad: {Type: 'AWS::S3::Bucket::MODULE'}}",
+            b"Resources: {Bad: {Type: 'MongoDB::Atlas::Cluster'}}",
+            b"Resources: {Bad: {Type: ['AWS::S3::Bucket']}}",
         ]
         for raw in cases:
             with self.subTest(raw=raw), self.assertRaises(ValueError):
                 preflight.parse_template(raw)
+
+    def test_accepts_standard_aws_resource_types_before_trusted_code_lists_them(self):
+        for resource_type in ["AWS::Logs::LogGroup", "AWS::CloudFront::CachePolicy", "AWS::WAFv2::WebACL"]:
+            with self.subTest(resource_type=resource_type):
+                raw = f"Resources: {{Example: {{Type: '{resource_type}'}}}}".encode()
+                self.assertEqual(preflight.parse_template(raw)["Resources"]["Example"]["Type"], resource_type)
 
     def test_rejects_duplicate_keys_aliases_and_object_tags(self):
         cases = [

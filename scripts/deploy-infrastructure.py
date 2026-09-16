@@ -19,6 +19,8 @@ NO_CHANGES = (
     "The submitted information didn't contain changes.",
     "No updates are to be performed.",
 )
+FINDING_FIELDS = ("ValidationName", "ValidationFailureMode", "LogicalResourceId",
+                  "ValidationPath", "ValidationStatusReason")
 
 
 def digest(value):
@@ -76,6 +78,29 @@ def inspect_changes(changes):
         result.append({key: resource.get(key) for key in
                        ("Action", "LogicalResourceId", "ResourceType", "Replacement", "Scope")})
     return result
+
+
+def validation_findings(stack_id, change_set_id):
+    """Print every validation finding and name each failure in the raised error."""
+    events = aws("cloudformation", "describe-events", stack_name=stack_id,
+                 change_set_name=change_set_id)
+    findings = [event for event in events.get("OperationEvents", [])
+                if event.get("EventType") == "VALIDATION_ERROR"]
+    for finding in findings:
+        print(json.dumps({key: finding.get(key) for key in FINDING_FIELDS}))
+    failures = [f"{finding.get('LogicalResourceId') or 'Template'}: "
+                f"{finding.get('ValidationStatusReason') or finding.get('ValidationName')}"
+                for finding in findings if finding.get("ValidationFailureMode") == "FAIL"]
+    if failures:
+        raise ValueError("CloudFormation validation findings require review before deployment: "
+                         + "; ".join(failures))
+    return findings
+
+
+def require_available(change_set):
+    """Report CloudFormation's own reason when a change set cannot be executed."""
+    if change_set["Status"] != "CREATE_COMPLETE" or change_set.get("ExecutionStatus") != "AVAILABLE":
+        raise ValueError(change_set.get("StatusReason") or "Change set is unavailable")
 
 
 def wait_for(fetch, finished, timeout=1200):
@@ -138,20 +163,9 @@ def plan(environment, commit, run):
         no_op = (change_set["Status"] == "FAILED" and
                  any(reason in change_set.get("StatusReason", "") for reason in NO_CHANGES))
         # An explicit no-change result has no deployment validation to inspect.
-        events = {} if no_op else aws(
-            "cloudformation", "describe-events", stack_name=stack["StackId"],
-            change_set_name=created["Id"])
-        findings = [event for event in events.get("OperationEvents", [])
-                    if event.get("EventType") == "VALIDATION_ERROR"]
-        for finding in findings:
-            print(json.dumps({key: finding.get(key) for key in
-                  ("ValidationName", "ValidationFailureMode", "LogicalResourceId",
-                   "ValidationPath", "ValidationStatusReason")}))
-        if any(finding.get("ValidationFailureMode") == "FAIL" for finding in findings):
-            raise ValueError("CloudFormation validation findings require review before deployment")
-        if not no_op and (change_set["Status"] != "CREATE_COMPLETE" or
-                          change_set["ExecutionStatus"] != "AVAILABLE"):
-            raise ValueError(change_set.get("StatusReason", "Change set is unavailable"))
+        if not no_op:
+            validation_findings(stack["StackId"], created["Id"])
+            require_available(change_set)
         changes = inspect_changes(change_set.get("Changes", []))
         result["stacks"].append({**item, "stackVersion": stack_version(stack),
                                  "templateSha256": digest(path.read_bytes()),
