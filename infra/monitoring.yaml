@@ -44,18 +44,18 @@ Parameters:
     Production4xxThreshold:
         Type: Number
         Default: 10
-        MinValue: 0
+        MinValue: 0.01
         MaxValue: 100
     Staging4xxThreshold:
         Type: Number
         Default: 50
-        MinValue: 0
+        MinValue: 0.01
         MaxValue: 100
         Description: Higher threshold accommodates expected unauthorized staging requests
     Error5xxThreshold:
         Type: Number
         Default: 5
-        MinValue: 0
+        MinValue: 0.01
         MaxValue: 100
 
 Rules:

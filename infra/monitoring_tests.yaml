@@ -1,0 +1,335 @@
+# Exercise required policy statements without deploying AWS resources
+# Anchors reuse only complete values; each invalid input isolates a regression
+
+- name: KMS allows both required actions with scoped CloudWatch access
+  input:
+      Resources:
+          AlarmKey: &valid_key
+              Type: AWS::KMS::Key
+              Properties:
+                  KeyPolicy:
+                      Statement:
+                          - Sid: AllowCloudWatchAlarmEncryption
+                            Effect: Allow
+                            Principal: { Service: 'cloudwatch.amazonaws.com' }
+                            Action: [kms:GenerateDataKey, kms:Decrypt]
+                            Resource: '*'
+                            Condition: &alarm_scope
+                                StringEquals:
+                                    aws:SourceAccount: { Ref: 'AWS::AccountId' }
+                                ArnLike:
+                                    aws:SourceArn:
+                                        Fn::Sub: 'arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:${AWS::StackName}-*'
+  expectations:
+      rules:
+          cloudwatch_key_access_is_scoped: PASS
+
+- name: KMS rejects a missing required statement
+  input:
+      Resources:
+          AlarmKey:
+              Type: AWS::KMS::Key
+              Properties:
+                  KeyPolicy:
+                      Statement:
+                          - Sid: EnableAccountAdministration
+                            Effect: Allow
+                            Action: 'kms:*'
+                            Resource: '*'
+  expectations:
+      rules:
+          cloudwatch_key_access_is_scoped: FAIL
+
+- name: KMS rejects a renamed required statement
+  input:
+      Resources:
+          AlarmKey:
+              Type: AWS::KMS::Key
+              Properties:
+                  KeyPolicy:
+                      Statement:
+                          - Sid: RenamedEncryption
+                            Effect: Allow
+                            Principal: { Service: 'cloudwatch.amazonaws.com' }
+                            Action: [kms:GenerateDataKey, kms:Decrypt]
+                            Resource: '*'
+                            Condition: *alarm_scope
+  expectations:
+      rules:
+          cloudwatch_key_access_is_scoped: FAIL
+
+- name: KMS rejects a denied required statement
+  input:
+      Resources:
+          AlarmKey:
+              Type: AWS::KMS::Key
+              Properties:
+                  KeyPolicy:
+                      Statement:
+                          - Sid: AllowCloudWatchAlarmEncryption
+                            Effect: Deny
+                            Principal: { Service: 'cloudwatch.amazonaws.com' }
+                            Action: [kms:GenerateDataKey, kms:Decrypt]
+                            Resource: '*'
+                            Condition: *alarm_scope
+  expectations:
+      rules:
+          cloudwatch_key_access_is_scoped: FAIL
+
+- name: KMS rejects missing GenerateDataKey
+  input:
+      Resources:
+          AlarmKey:
+              Type: AWS::KMS::Key
+              Properties:
+                  KeyPolicy:
+                      Statement:
+                          - Sid: AllowCloudWatchAlarmEncryption
+                            Effect: Allow
+                            Principal: { Service: 'cloudwatch.amazonaws.com' }
+                            Action: [kms:Decrypt]
+                            Resource: '*'
+                            Condition: *alarm_scope
+  expectations:
+      rules:
+          cloudwatch_key_access_is_scoped: FAIL
+
+- name: KMS rejects missing Decrypt
+  input:
+      Resources:
+          AlarmKey:
+              Type: AWS::KMS::Key
+              Properties:
+                  KeyPolicy:
+                      Statement:
+                          - Sid: AllowCloudWatchAlarmEncryption
+                            Effect: Allow
+                            Principal: { Service: 'cloudwatch.amazonaws.com' }
+                            Action: [kms:GenerateDataKey]
+                            Resource: '*'
+                            Condition: *alarm_scope
+  expectations:
+      rules:
+          cloudwatch_key_access_is_scoped: FAIL
+
+- name: KMS rejects missing all actions
+  input:
+      Resources:
+          AlarmKey:
+              Type: AWS::KMS::Key
+              Properties:
+                  KeyPolicy:
+                      Statement:
+                          - Sid: AllowCloudWatchAlarmEncryption
+                            Effect: Allow
+                            Principal: { Service: 'cloudwatch.amazonaws.com' }
+                            Resource: '*'
+                            Condition: *alarm_scope
+  expectations:
+      rules:
+          cloudwatch_key_access_is_scoped: FAIL
+
+- name: KMS rejects broader actions
+  input:
+      Resources:
+          AlarmKey:
+              Type: AWS::KMS::Key
+              Properties:
+                  KeyPolicy:
+                      Statement:
+                          - Sid: AllowCloudWatchAlarmEncryption
+                            Effect: Allow
+                            Principal: { Service: 'cloudwatch.amazonaws.com' }
+                            Action: [kms:GenerateDataKey, kms:Decrypt, 'kms:*']
+                            Resource: '*'
+                            Condition: *alarm_scope
+  expectations:
+      rules:
+          cloudwatch_key_access_is_scoped: FAIL
+
+- name: KMS rejects another service principal
+  input:
+      Resources:
+          AlarmKey:
+              Type: AWS::KMS::Key
+              Properties:
+                  KeyPolicy:
+                      Statement:
+                          - Sid: AllowCloudWatchAlarmEncryption
+                            Effect: Allow
+                            Principal: { Service: 'sns.amazonaws.com' }
+                            Action: [kms:GenerateDataKey, kms:Decrypt]
+                            Resource: '*'
+                            Condition: *alarm_scope
+  expectations:
+      rules:
+          cloudwatch_key_access_is_scoped: FAIL
+
+- name: KMS rejects missing source constraints
+  input:
+      Resources:
+          AlarmKey:
+              Type: AWS::KMS::Key
+              Properties:
+                  KeyPolicy:
+                      Statement:
+                          - Sid: AllowCloudWatchAlarmEncryption
+                            Effect: Allow
+                            Principal: { Service: 'cloudwatch.amazonaws.com' }
+                            Action: [kms:GenerateDataKey, kms:Decrypt]
+                            Resource: '*'
+
+  expectations:
+      rules:
+          cloudwatch_key_access_is_scoped: FAIL
+
+- name: Each KMS key must include the required statement
+  input:
+      Resources:
+          ValidKey: *valid_key
+          BrokenKey:
+              Type: AWS::KMS::Key
+              Properties:
+                  KeyPolicy:
+                      Statement: []
+  expectations:
+      rules:
+          cloudwatch_key_access_is_scoped: FAIL
+
+- name: SNS permits scoped CloudWatch publishing
+  input:
+      Resources:
+          AlarmTopicPolicy: &valid_topic_policy
+              Type: AWS::SNS::TopicPolicy
+              Properties:
+                  PolicyDocument:
+                      Statement:
+                          - Sid: AllowCloudWatchAlarms
+                            Effect: Allow
+                            Principal: { Service: 'cloudwatch.amazonaws.com' }
+                            Action: 'sns:Publish'
+                            Resource: { Ref: AlarmTopic }
+                            Condition: *alarm_scope
+  expectations:
+      rules:
+          service_publishing_is_scoped: PASS
+
+- name: SNS rejects an empty statement list
+  input:
+      Resources:
+          AlarmTopicPolicy:
+              Type: AWS::SNS::TopicPolicy
+              Properties:
+                  PolicyDocument:
+                      Statement: []
+  expectations:
+      rules:
+          service_publishing_is_scoped: FAIL
+
+- name: SNS rejects a policy with only deny statements
+  input:
+      Resources:
+          AlarmTopicPolicy:
+              Type: AWS::SNS::TopicPolicy
+              Properties:
+                  PolicyDocument:
+                      Statement:
+                          - Sid: AllowCloudWatchAlarms
+                            Effect: Deny
+                            Principal: { Service: 'cloudwatch.amazonaws.com' }
+                            Action: 'sns:Publish'
+                            Resource: { Ref: AlarmTopic }
+                            Condition: *alarm_scope
+  expectations:
+      rules:
+          service_publishing_is_scoped: FAIL
+
+- name: SNS rejects missing publish permission
+  input:
+      Resources:
+          AlarmTopicPolicy:
+              Type: AWS::SNS::TopicPolicy
+              Properties:
+                  PolicyDocument:
+                      Statement:
+                          - Sid: AllowCloudWatchAlarms
+                            Effect: Allow
+                            Principal: { Service: 'cloudwatch.amazonaws.com' }
+                            Resource: { Ref: AlarmTopic }
+                            Condition: *alarm_scope
+  expectations:
+      rules:
+          service_publishing_is_scoped: FAIL
+
+- name: SNS rejects missing source constraints
+  input:
+      Resources:
+          AlarmTopicPolicy:
+              Type: AWS::SNS::TopicPolicy
+              Properties:
+                  PolicyDocument:
+                      Statement:
+                          - Sid: AllowCloudWatchAlarms
+                            Effect: Allow
+                            Principal: { Service: 'cloudwatch.amazonaws.com' }
+                            Action: 'sns:Publish'
+                            Resource: { Ref: AlarmTopic }
+
+  expectations:
+      rules:
+          service_publishing_is_scoped: FAIL
+
+- name: SNS rejects broader actions
+  input:
+      Resources:
+          AlarmTopicPolicy:
+              Type: AWS::SNS::TopicPolicy
+              Properties:
+                  PolicyDocument:
+                      Statement:
+                          - Sid: AllowCloudWatchAlarms
+                            Effect: Allow
+                            Principal: { Service: 'cloudwatch.amazonaws.com' }
+                            Action: 'sns:*'
+                            Resource: { Ref: AlarmTopic }
+                            Condition: *alarm_scope
+  expectations:
+      rules:
+          service_publishing_is_scoped: FAIL
+
+- name: SNS checks every allow statement
+  input:
+      Resources:
+          AlarmTopicPolicy:
+              Type: AWS::SNS::TopicPolicy
+              Properties:
+                  PolicyDocument:
+                      Statement:
+                          - Sid: AllowCloudWatchAlarms
+                            Effect: Allow
+                            Principal: { Service: 'cloudwatch.amazonaws.com' }
+                            Action: 'sns:Publish'
+                            Resource: { Ref: AlarmTopic }
+                            Condition: *alarm_scope
+                          - Sid: AllowCloudWatchAlarms
+                            Effect: Allow
+                            Principal: { Service: 's3.amazonaws.com' }
+                            Action: 'sns:Publish'
+                            Resource: { Ref: AlarmTopic }
+                            Condition: *alarm_scope
+  expectations:
+      rules:
+          service_publishing_is_scoped: FAIL
+
+- name: Each SNS policy must allow CloudWatch publishing
+  input:
+      Resources:
+          ValidPolicy: *valid_topic_policy
+          BrokenPolicy:
+              Type: AWS::SNS::TopicPolicy
+              Properties:
+                  PolicyDocument:
+                      Statement: []
+  expectations:
+      rules:
+          service_publishing_is_scoped: FAIL

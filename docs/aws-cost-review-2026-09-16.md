@@ -83,7 +83,7 @@ performed. Cached assets and rollback candidates remain protected.
 
 ## Monitoring and logging verification
 
-- Monitoring stack reached CREATE_COMPLETE with six alarms and encrypted SNS notifications
+- Monitoring stack reached CREATE_COMPLETE with six alarms and an SNS topic encrypted at rest
 - Default CloudFront request and error metrics selected, with no paid additional metrics or custom dashboard
 - Owner confirmed the email subscription and receipt of the clearly labeled test alarm
 - CloudWatch recorded successful test ALARM publication at 13:41:01 UTC and recovery publication at 13:41:24 UTC
@@ -106,7 +106,7 @@ performed. Cached assets and rollback candidates remain protected.
 | Cost allocation tags inactive                          | Activated Project and Environment; verified Active status                                                                        | Maintainer: check project attribution after billing propagation, then at the October review             |
 | Distribution, deployment-role and OIDC tags incomplete | Added explicit template tags, deployed isolated tag updates and verified them; tagged the separately bootstrapped staging secret | Maintainer: preserve shared OIDC ownership and verify tagged resources after each infrastructure change |
 | Account spend dominated by compute and networking      | Flagged for an account-level review; no unrelated resources stopped or modified                                                  | Account owner: inspect before the next budget threshold or October review                               |
-| No monitoring alerts                                   | Deployed request and error alarms; verified encrypted email delivery                                                             | Maintainer: tune thresholds after one week and after #66                                                |
+| No monitoring alerts                                   | Deployed request and error alarms; verified email delivery through an SNS topic encrypted at rest                                | Maintainer: tune thresholds after one week and after #66                                                |
 | Retained versions accumulate                           | Included every object version in the storage baseline                                                                            | Maintainer: inspect monthly; use protected retention preview before any cleanup                         |
 | New recurring key cost                                 | Included $1/month plus request charges; recorded rotation and teardown costs                                                     | Maintainer: revisit before annual rotation or removing monitoring                                       |
 | Historical cost attribution incomplete                 | Keep account totals alongside project-filtered reports                                                                           | Maintainer: do not present untagged charges as zero website cost                                        |
