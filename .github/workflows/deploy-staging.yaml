@@ -19,8 +19,12 @@ defaults:
     shell: bash
 
 jobs:
+  infrastructure-checks:
+    uses: ./.github/workflows/infrastructure-checks.yaml
+
   build:
     name: Check and package
+    needs: infrastructure-checks
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -80,9 +84,19 @@ jobs:
           compression-level: 0
           retention-days: 7
 
+  staging-plan:
+    name: Plan staging infrastructure
+    needs: build
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/plan-infrastructure.yaml
+    with:
+      environment: staging
+
   staging:
     name: Publish and verify staging
-    needs: build
+    needs: [build, staging-plan]
     if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
@@ -94,10 +108,22 @@ jobs:
       release-id: ${{ needs.build.outputs.release-id }}
       artifact-id: ${{ needs.build.outputs.artifact-id }}
       manifest-sha256: ${{ needs.build.outputs.manifest-sha256 }}
+      infrastructure-artifact-id: ${{ needs.staging-plan.outputs.artifact-id }}
+      infrastructure-sha256: ${{ needs.staging-plan.outputs.sha256 }}
+
+  production-plan:
+    name: Plan production infrastructure
+    needs: staging
+    permissions:
+      contents: read
+      id-token: write
+    uses: ./.github/workflows/plan-infrastructure.yaml
+    with:
+      environment: production
 
   production:
     name: Publish and verify production
-    needs: [build, staging]
+    needs: [build, staging, production-plan]
     if: github.ref == 'refs/heads/main'
     permissions:
       contents: read
@@ -108,3 +134,5 @@ jobs:
       release-id: ${{ needs.build.outputs.release-id }}
       artifact-id: ${{ needs.build.outputs.artifact-id }}
       manifest-sha256: ${{ needs.build.outputs.manifest-sha256 }}
+      infrastructure-artifact-id: ${{ needs.production-plan.outputs.artifact-id }}
+      infrastructure-sha256: ${{ needs.production-plan.outputs.sha256 }}
