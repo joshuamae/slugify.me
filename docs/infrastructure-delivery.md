@@ -30,6 +30,12 @@ uses a separate role that cannot execute changes. The protected production job
 obtains execution credentials only after approval. Infrastructure and
 application rollback share the existing `aws-staging` concurrency group.
 
+The publishing job allows 180 minutes. Production can spend up to 35 minutes on
+each of its three stack updates, followed by up to 20 minutes waiting for
+CloudFront and the remaining time verifying and publishing the website.
+Infrastructure execution credentials last three hours; website publishing
+obtains fresh, separate credentials after infrastructure verification.
+
 Expected result: AWS reports successful stack updates, the existing release
 still passes verification, and the new website release passes all content and
 access checks. A failed step stops promotion.
@@ -86,8 +92,15 @@ update their own bootstrap stacks or grant themselves new permissions.
     ```
 
     Review the saved stack/resource ARNs. Keep this account-specific file outside
-    Git. The helper reads identifiers, not secret values. Existing stacks must
-    be stable and must not have an inherited CloudFormation service role.
+    Git. The helper creates the file with owner-only read/write permissions
+    (`0600`) before writing and replaces any previous file atomically. It reads
+    identifiers, not secret values. Existing stacks must be stable and must not
+    have an inherited CloudFormation service role.
+
+    For staging, the helper copies the hosting stack's `StagingAuthSecretArn`
+    into a separate bootstrap parameter. Only the staging execution role can
+    read that secret. Production receives no secret-read permission, and adding
+    other secrets to `ResourceArns` does not grant access to their values.
 
 3. Create and inspect the bootstrap change set
 
@@ -147,6 +160,53 @@ ruleset after its first successful run. Do not disable the existing code-quality
 check. Role bootstrap changes remain a separately reviewed administrator
 operation; the pipeline validates their template but cannot deploy it itself.
 
+## Update existing infrastructure roles
+
+If you already created the bootstrap stacks, update them with administrator
+credentials before running the updated workflow. The pipeline cannot update
+its own roles. These changes allow the longer execution session and restrict
+secret reads to staging authentication.
+
+1. Repeat steps 1–2 in **Set up infrastructure roles once** for the environment
+   you want to update, using this checkout to regenerate the parameter file
+2. Create and inspect an update change set
+
+    ```sh
+    aws cloudformation create-change-set \
+      --stack-name "static-site-infra-${INFRA_ENVIRONMENT}" \
+      --change-set-name update-infrastructure-roles --change-set-type UPDATE \
+      --template-body file://infra/deployment-roles.yaml \
+      --parameters "file://$INFRA_PARAMETERS" --capabilities CAPABILITY_IAM
+    aws cloudformation wait change-set-create-complete \
+      --stack-name "static-site-infra-${INFRA_ENVIRONMENT}" \
+      --change-set-name update-infrastructure-roles
+    aws cloudformation describe-change-set \
+      --stack-name "static-site-infra-${INFRA_ENVIRONMENT}" \
+      --change-set-name update-infrastructure-roles
+    aws cloudformation describe-events \
+      --stack-name "static-site-infra-${INFRA_ENVIRONMENT}" \
+      --change-set-name update-infrastructure-roles
+    ```
+
+3. After reviewing the role changes and validation results, execute the change
+   set and wait for the update
+
+    ```sh
+    aws cloudformation execute-change-set \
+      --stack-name "static-site-infra-${INFRA_ENVIRONMENT}" \
+      --change-set-name update-infrastructure-roles
+    aws cloudformation wait stack-update-complete \
+      --stack-name "static-site-infra-${INFRA_ENVIRONMENT}"
+    ```
+
+4. Repeat for the other environment before starting a new deployment run
+
+Expected result: both execution roles allow three-hour sessions, staging can
+read only its authentication secret, and production has no secret-read
+permission. Role ARNs stay the same. See
+[AWS role session duration](https://docs.aws.amazon.com/STS/latest/APIReference/API_AssumeRoleWithWebIdentity.html)
+for how the requested duration and role maximum work together.
+
 ## Parameters, plans, and failure handling
 
 - Existing parameter values stay in CloudFormation via `UsePreviousValue`, including
@@ -157,8 +217,10 @@ operation; the pipeline validates their template but cannot deploy it itself.
   ARNs, and resource changes, without parameter values
 - The execution job downloads the exact artifact ID and verifies its checksum
 - An intervening stack update invalidates the plan, including a previously empty plan
-- Explicit CloudFormation no-change results succeed; access errors and validation
-  findings do not count as no-ops
+- Explicit CloudFormation no-change results succeed; access errors and blocking
+  validation findings do not count as no-ops
+- Validation findings with `FAIL` mode stop planning; `WARN` findings appear in
+  the job log and allow an otherwise valid change set to proceed
 - Resource deletion or replacement requires a separately reviewed migration
 - IAM permission or trust changes require an administrator; automated IAM changes
   are limited to tags, so the execution role cannot expand the publisher role's access
@@ -168,20 +230,25 @@ operation; the pipeline validates their template but cannot deploy it itself.
 - Failure after one stack update does not undo earlier successful stack updates
 - Application rollback restores website content only; it does not revert infrastructure
 - Infrastructure plans and verification evidence are retained as workflow artifacts
+- Production verification requires six enabled alarms with the monitoring stack's
+  `AlarmTopicArn` in both `AlarmActions` and `OKActions`
 
 ## Troubleshooting
 
-| Symptom                                          | What to do                                                                                                      |
-| ------------------------------------------------ | --------------------------------------------------------------------------------------------------------------- |
-| Docker cannot connect                            | Start Docker Desktop and rerun the validation command                                                           |
-| OIDC access denied                               | Check the immutable subject prefix, matching environment suffix, and `main` branch restriction                  |
-| Missing planning/execution role                  | Complete the bootstrap and set the corresponding environment variable                                           |
-| AWS CLI does not recognize `describe-events`     | Update AWS CLI v2 before running the deployment helper                                                          |
-| Plan changed while approval was pending          | Inspect the live stack, then start a new workflow run from current `main`                                       |
-| Rerunning only failed jobs rejects the plan      | Start a new complete run; plans are bound to their original run attempt                                         |
-| New resource or permission is denied             | Review and update the bootstrap role scope before retrying; avoid administrator policies in CI                  |
-| Stack update rolls back                          | Inspect CloudFormation events and fix the template; the website publishing step stays stopped                   |
-| Verification fails after infrastructure succeeds | Investigate the infrastructure while the existing release remains active; the new release has not been uploaded |
+| Symptom                                             | What to do                                                                                                          |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Docker cannot connect                               | Start Docker Desktop and rerun the validation command                                                               |
+| OIDC access denied                                  | Check the immutable subject prefix, matching environment suffix, and `main` branch restriction                      |
+| Missing planning/execution role                     | Complete the bootstrap and set the corresponding environment variable                                               |
+| Requested session duration exceeds the role maximum | Update the existing infrastructure roles before retrying the workflow                                               |
+| Staging bootstrap requires `StagingAuthSecretArn`   | Set the authentication secret ARN on the staging hosting stack, then regenerate the bootstrap parameters            |
+| Monitoring alarms fail destination verification     | Check that all six enabled alarms include the monitoring stack's `AlarmTopicArn` in both alarm and recovery actions |
+| AWS CLI does not recognize `describe-events`        | Update AWS CLI v2 before running the deployment helper                                                              |
+| Plan changed while approval was pending             | Inspect the live stack, then start a new workflow run from current `main`                                           |
+| Rerunning only failed jobs rejects the plan         | Start a new complete run; plans are bound to their original run attempt                                             |
+| New resource or permission is denied                | Review and update the bootstrap role scope before retrying; avoid administrator policies in CI                      |
+| Stack update rolls back                             | Inspect CloudFormation events and fix the template; the website publishing step stays stopped                       |
+| Verification fails after infrastructure succeeds    | Investigate the infrastructure while the existing release remains active; the new release has not been uploaded     |
 
 For role and approval behavior, see [GitHub deployment environments](https://docs.github.com/en/actions/concepts/workflows-and-actions/deployment-environments)
 and [CloudFormation change sets](https://docs.aws.amazon.com/AWSCloudFormation/latest/UserGuide/using-cfn-updating-stacks-changesets.html).

@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import runpy
 import subprocess
+import tempfile
 
 helpers = runpy.run_path(str(Path(__file__).with_name("deploy-infrastructure.py")))
 aws = helpers["aws"]
@@ -39,6 +40,21 @@ def resource_arn(resource, partition, account, region):
     return f"arn:{partition}:{suffixes[kind]}"
 
 
+def write_parameters(output, values):
+    """Replace the parameter file atomically, with owner-only access from creation."""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(dir=output.parent, prefix=f".{output.name}.")
+    temporary = Path(name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump([{"ParameterKey": key, "ParameterValue": value}
+                       for key, value in values.items()], stream, indent=2)
+            stream.write("\n")
+        os.replace(temporary, output)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def main():
     """Collect exact stack and resource scopes without guessing account IDs."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -58,24 +74,26 @@ def main():
     prefix = oidc.get("sub_claim_prefix", "repo:" + args.repository)
     stacks = []
     resources = set()
+    staging_auth_secret = ""
     for item in helpers["deployment_config"](args.environment):
         stack = helpers["checked_stack"](item["stack"])
         stacks.append(stack["StackId"])
-        for parameter in stack.get("Parameters", []):
-            if parameter["ParameterKey"] == "StagingAuthSecretArn" and parameter.get("ParameterValue"):
-                resources.add(parameter["ParameterValue"])
+        if args.environment == "staging" and item["template"] == "infra/site.yaml":
+            staging_auth_secret = next((parameter.get("ParameterValue", "")
+                                       for parameter in stack.get("Parameters", [])
+                                       if parameter["ParameterKey"] == "StagingAuthSecretArn"), "")
         response = aws("cloudformation", "list-stack-resources", stack_name=stack["StackId"])
         for resource in response["StackResourceSummaries"]:
             arn = resource_arn(resource, partition, account, os.environ["AWS_REGION"])
             if arn:
                 resources.add(arn)
+    if args.environment == "staging" and not staging_auth_secret:
+        raise ValueError("Staging requires StagingAuthSecretArn on the hosting stack")
     values = {"Environment": args.environment, "GitHubOidcSubjectPrefix": prefix,
               "OidcProviderArn": f"arn:{partition}:iam::{account}:oidc-provider/token.actions.githubusercontent.com",
-              "StackArns": ",".join(stacks), "ResourceArns": ",".join(sorted(resources))}
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps([{"ParameterKey": key, "ParameterValue": value}
-                                      for key, value in values.items()], indent=2) + "\n")
-    args.output.chmod(0o600)
+              "StackArns": ",".join(stacks), "ResourceArns": ",".join(sorted(resources)),
+              "StagingAuthSecretArn": staging_auth_secret}
+    write_parameters(args.output, values)
     print(f"Prepared {len(stacks)} stack scopes and {len(resources)} resource scopes in {args.output}")
 
 

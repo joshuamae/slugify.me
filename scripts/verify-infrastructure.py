@@ -30,13 +30,19 @@ def main():
         raise ValueError("Distribution must be enabled with authenticated origin access")
     if environment == "production":
         monitoring = next(item for item in deployments if item["template"] == "infra/monitoring.yaml")
+        monitoring_stack = helpers["checked_stack"](monitoring["stack"])
+        topic = next((item["OutputValue"] for item in monitoring_stack.get("Outputs", [])
+                      if item["OutputKey"] == "AlarmTopicArn"), None)
+        if not topic:
+            raise ValueError("Monitoring stack must expose AlarmTopicArn")
         resources = aws("cloudformation", "list-stack-resources", stack_name=monitoring["stack"])
         alarm_names = [item["PhysicalResourceId"] for item in resources["StackResourceSummaries"]
                        if item["ResourceType"] == "AWS::CloudWatch::Alarm"]
         alarms = aws("cloudwatch", "describe-alarms", alarm_names=alarm_names)["MetricAlarms"]
-        if len(alarms) != 6 or any(not alarm["ActionsEnabled"] or not alarm.get("AlarmActions")
-                                   or not alarm.get("OKActions") for alarm in alarms):
-            raise ValueError("Expected six enabled monitoring alarms with notification actions")
+        if len(alarms) != 6 or any(not alarm["ActionsEnabled"]
+                                   or topic not in alarm.get("AlarmActions", [])
+                                   or topic not in alarm.get("OKActions", []) for alarm in alarms):
+            raise ValueError("Expected six enabled monitoring alarms notifying AlarmTopicArn")
     settings = {"S3_BUCKET": outputs["BucketName"],
                 "CLOUDFRONT_DISTRIBUTION_ID": outputs["DistributionId"],
                 "SITE_URL": outputs["SiteUrl"], "SITE_PUBLISH_ROLE_ARN": outputs["DeployRoleArn"]}
