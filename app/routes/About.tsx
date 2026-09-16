@@ -129,8 +129,19 @@ export default function About() {
 				<p className="text-muted-foreground">
 					Your text is normalized, converted to lowercase, and
 					separated with clean hyphens. Unicode letters and numbers
-					are preserved, while repeated punctuation and whitespace are
-					reduced to a single separator.
+					are preserved. Clear symbol contexts are spoken, so #1
+					becomes number-1, 1+1=2 becomes 1-plus-1-equals-2, A*
+					algorithm becomes a-star-algorithm, and 5* becomes 5-stars.
+					Reviewed terms such as C++, F#, .NET, and Notepad++ retain
+					their meaning. Musical notes such as B♭ and fractions such
+					as 1½ keep their distinguishing symbols as words. Roots,
+					powers, set notation, arrows, and programming operators also
+					retain readable names: x² becomes x-to-the-power-of-2 and
+					a??b becomes a-nullish-coalescing-b. Ordinary prose,
+					including “Hello - world” and “input / output,” uses clean
+					separators. These rules recognize notation without
+					evaluating expressions or interpreting every possible
+					meaning of a symbol.
 				</p>
 			</section>
 
