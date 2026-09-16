@@ -63,7 +63,7 @@ const pages = [
 		heading: 'Privacy Policy',
 		title: 'Privacy Policy | slugify.me',
 		description:
-			'Read the slugify.me privacy policy and learn how personal information is collected, processed, retained, and protected',
+			'Learn how slugify.me handles text, AWS hosting requests, and browser storage',
 	},
 ];
 

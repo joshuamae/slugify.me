@@ -24,10 +24,11 @@ processing statement. Each page defines its own title and description.
 
 Slug generation happens locally in your browser. Text entered into the generator
 is not uploaded or saved by the application, and there are no ads. The Privacy
-Policy describes hosting-related request information separately. A shadcn TL;DR
-card appears before the policy heading. Updating the policy's previous-host
-disclosures to reflect AWS hosting and the logs actually retained is tracked in
-#70.
+Policy page keeps the shadcn TL;DR card above a short factual notice covering
+local text conversion, copying to the clipboard, AWS hosting and monitoring,
+disabled visitor access logs, and browser session storage for scroll positions.
+The notice retains the existing privacy email contact and uses the project's
+shadcn Card and Separator components.
 
 ## Site structure
 
