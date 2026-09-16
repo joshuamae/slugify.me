@@ -60,7 +60,7 @@ conversion rules and verification steps.
 - [Develop and test the app](docs/development.md)
 - [Set up AWS hosting and recover releases](docs/aws-hosting.md)
 - [Deploy infrastructure and website changes](docs/infrastructure-delivery.md)
-- [Monitor hosting and review costs](docs/aws-operations.md)
+- [Monitor hosting, filter alert emails and review costs](docs/aws-operations.md)
 - [Rehearse recovery from a missing staging asset](docs/aws-staging-failure-exercise.md)
 - [Privacy policy](https://slugify.me/privacy-policy)
 

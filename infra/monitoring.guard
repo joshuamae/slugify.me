@@ -60,3 +60,17 @@ rule alarms_have_actions_and_explicit_evaluation when %alarms !empty {
 rule subscriptions_use_email when %subscriptions !empty {
     %subscriptions.Properties.Protocol == 'email'
 }
+
+rule email_filters_production_incidents when %subscriptions !empty {
+    %subscriptions.Properties.FilterPolicyScope == 'MessageBody'
+    %subscriptions.Properties.FilterPolicy == {
+        "AlarmName": [
+            {"Fn::Sub": "${AWS::StackName}-production-4xx"},
+            {"Fn::Sub": "${AWS::StackName}-production-5xx"}
+        ],
+        "$or": [
+            {"NewStateValue": ["ALARM"]},
+            {"NewStateValue": ["OK"], "OldStateValue": ["ALARM"]}
+        ]
+    }
+}
