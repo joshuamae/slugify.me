@@ -69,22 +69,97 @@ rule shared_inspection_keeps_existing_stack_scope {
     }
 }
 
+# IAM matches action names case-insensitively. NotAction and nested condition functions can
+# hide grants, so every statement that might grant CloudFormation must match a reviewed shape.
+let planner_statements = Resources.Planner.Properties.Policies[*].PolicyDocument.Statement[*]
+let executor_statements = Resources.Executor.Properties.Policies[*].PolicyDocument.Statement[*]
+let policy_resources = Resources.*[
+    Type in ['AWS::IAM::Policy', 'AWS::IAM::ManagedPolicy', 'AWS::IAM::RolePolicy']
+]
+let expected_planner_validate = {
+    "Effect": "Allow",
+    "Action": "cloudformation:ValidateTemplate",
+    "Resource": "*"
+}
+let expected_planner_create = {
+    "Effect": "Allow",
+    "Action": "cloudformation:CreateChangeSet",
+    "Resource": {"Ref": "StackArns"},
+    "Condition": {
+        "StringLike": {
+            "cloudformation:ChangeSetName": [
+                {"Fn::Sub": "github-${Environment}-*"},
+                {"Fn::Sub": "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/github-${Environment}-*/*"},
+                {"Fn::Sub": "premerge-${Environment}-*"},
+                {"Fn::Sub": "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/premerge-${Environment}-*/*"}
+            ]
+        },
+        "Null": {"cloudformation:RoleArn": "true"}
+    }
+}
+
+# Separate policy resources cannot be tied reliably to a role, so each one in this template
+# may grant CloudFormation only through the reviewed shared inspection statements
+rule policy_resources_grant_only_shared_inspection when %policy_resources !empty {
+    %policy_resources.Properties.PolicyDocument.Statement is_list
+    let resource_change_sets = %policy_resources.Properties.PolicyDocument.Statement[
+        Action == /(?i)^(cloudformation:.*|\*)$/ OR
+        some Action[*] == /(?i)^(cloudformation:.*|\*)$/ OR
+        NotAction exists OR
+        'Fn::If' exists
+    ]
+    %resource_change_sets[*] {
+        this == %expected_stack_reads OR
+        this == %expected_event_read
+    }
+}
+
 # Planning cleanup must never remove the reviewed change sets used after merge
 rule planner_cleanup_only_deletes_pre_merge_change_sets {
-    let cleanup = Resources.Planner.Properties.Policies[*].PolicyDocument.Statement[
+    Resources.Planner.Properties.ManagedPolicyArns empty
+    Resources.Planner.Properties.Policies[*].PolicyDocument.Statement is_list
+    when %policy_resources !empty {
+        policy_resources_grant_only_shared_inspection
+    }
+    let cleanup = %planner_statements[
         Sid == 'CleanupPreMergeChangeSets'
     ]
     %cleanup !empty
     %cleanup == %expected_pre_merge_cleanup
+    let change_set_statements = %planner_statements[
+        Action == /(?i)^(cloudformation:.*|\*)$/ OR
+        some Action[*] == /(?i)^(cloudformation:.*|\*)$/ OR
+        NotAction exists OR
+        'Fn::If' exists
+    ]
+    %change_set_statements[*] {
+        this == %expected_planner_validate OR
+        this == %expected_planner_create OR
+        this == %expected_pre_merge_cleanup
+    }
 }
 
 # Pull request templates use the premerge- prefix, which the executor's github- names never match
 rule executor_cannot_run_pre_merge_change_sets {
-    let statements = Resources.Executor.Properties.Policies[*].PolicyDocument.Statement[*]
-    let change_set_statements = %statements[
-        Action == /^(cloudformation:.*|\*)$/ OR
-        some Action[*] == /^(cloudformation:.*|\*)$/
+    Resources.Executor.Properties.ManagedPolicyArns empty
+    Resources.Executor.Properties.Policies[*].PolicyDocument.Statement is_list
+    when %policy_resources !empty {
+        policy_resources_grant_only_shared_inspection
+    }
+    let change_set_statements = %executor_statements[
+        Action == /(?i)^(cloudformation:.*|\*)$/ OR
+        some Action[*] == /(?i)^(cloudformation:.*|\*)$/ OR
+        NotAction exists
     ]
     %change_set_statements !empty
     %change_set_statements == %expected_executor_change_sets
+    # The staging secret read is conditional; neither branch may grant CloudFormation
+    let conditional_branches = %executor_statements[ 'Fn::If' exists ].'Fn::If'[*][ this is_struct ]
+    let conditional_change_sets = %conditional_branches[
+        Action == /(?i)^(cloudformation:.*|\*)$/ OR
+        some Action[*] == /(?i)^(cloudformation:.*|\*)$/ OR
+        NotAction exists OR
+        'Fn::If' exists
+    ]
+    %conditional_change_sets empty
 }

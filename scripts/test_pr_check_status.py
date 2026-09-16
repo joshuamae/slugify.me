@@ -130,11 +130,13 @@ class PreMergeStatusTests(unittest.TestCase):
         with patch.dict(os.environ, RUN_ENV), patch.object(check, "api", side_effect=failure):
             self.assertEqual(check.plan_errors(REPOSITORY), [])
 
-    def begin_with(self, associated, pulls):
-        responses = [{"id": 3, "default_branch": "main"}, {"id": 900}, associated, *pulls, {}, {}]
+    def begin_with(self, associated, pulls, run=None, default_branch="main"):
+        responses = [{"id": 3, "default_branch": default_branch}, {"id": 900}, associated, *pulls, {}, {}]
+        if default_branch != "main":
+            responses = [responses[0], responses[1], {}]
         with tempfile.NamedTemporaryFile("r") as output, \
                 patch.dict(os.environ, {**RUN_ENV, "GITHUB_OUTPUT": output.name}), \
-                patch.object(check, "source_run", return_value=source()), \
+                patch.object(check, "source_run", return_value=run or source()), \
                 patch.object(check, "api", side_effect=responses) as api:
             try:
                 check.begin(REPOSITORY, 11, 1)
@@ -162,6 +164,40 @@ class PreMergeStatusTests(unittest.TestCase):
         self.assertEqual(final.args[2]["conclusion"], "failure")
         self.assertIn("found 0", final.args[2]["output"]["summary"])
         self.assertEqual(outputs, "check-id=900\n")
+
+    def test_begin_rejects_multiple_matching_pull_requests(self):
+        other = {**pull(), "number": 8}
+        calls, outputs, raised = self.begin_with([{"number": 7}, {"number": 8}], [pull(), other])
+        self.assertRegex(str(raised), "found 2")
+        self.assertEqual(calls[-1].args[2]["conclusion"], "failure")
+        self.assertNotIn("run-plans", outputs)
+
+    def test_begin_rejects_a_default_branch_other_than_main(self):
+        calls, outputs, raised = self.begin_with([], [], default_branch="develop")
+        self.assertRegex(str(raised), "default branch")
+        self.assertEqual([call.args[1] for call in calls[1:]], ["POST", "PATCH"])
+        self.assertEqual(calls[-1].args[2]["conclusion"], "failure")
+        self.assertNotIn("run-plans", outputs)
+
+    def test_failed_upstream_run_does_not_enable_aws_planning(self):
+        calls, outputs, raised = self.begin_with([{"number": 7}], [pull()],
+                                                 run={**source(), "conclusion": "failure"})
+        self.assertIsNone(raised)
+        self.assertIn("run-plans=false", outputs)
+        self.assertNotIn("run-plans=true", outputs)
+
+    def test_fail_by_head_completes_this_runs_pending_check_instead_of_adding_one(self):
+        runs = {"check_runs": [
+            {"id": 900, "name": check.CHECK_NAME, "status": "in_progress", "details_url": RUN_URL},
+            {"id": 901, "name": check.CHECK_NAME, "status": "in_progress",
+             "details_url": "https://github.com/example/site/actions/runs/1"},
+            {"id": 902, "name": check.CHECK_NAME, "status": "completed", "details_url": RUN_URL}]}
+        with patch.dict(os.environ, RUN_ENV), patch.object(check, "api", side_effect=[runs, {}]) as api:
+            check.fail(REPOSITORY, head=HEAD)
+        self.assertEqual([(call.args[0], call.args[1] if len(call.args) > 1 else "GET") for call in api.call_args_list],
+                         [(f"repos/{REPOSITORY}/commits/{HEAD}/check-runs?check_name=AWS%20pre-merge&filter=all&per_page=100", "GET"),
+                          (f"repos/{REPOSITORY}/check-runs/900", "PATCH")])
+        self.assertEqual(api.call_args.args[2]["conclusion"], "failure")
 
     def test_fail_never_reports_success_or_overwrites_a_result(self):
         with patch.dict(os.environ, RUN_ENV), patch.object(check, "api", return_value={}) as api:

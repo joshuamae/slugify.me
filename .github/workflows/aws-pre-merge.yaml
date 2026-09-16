@@ -47,15 +47,20 @@ jobs:
         run: |
           python3 -B scripts/pr-infrastructure-check.py begin \
             --repository "$GITHUB_REPOSITORY" --run "$SOURCE_RUN" --attempt "$SOURCE_ATTEMPT"
-      # A failure can never pass, so report it on the PR instead of leaving a missing check.
+      # A failure can never pass, so report it on the PR instead of leaving a missing or pending check.
+      # Cancellation can interrupt begin after it publishes the check ID, which report never receives.
       - name: Report a failure to start on the pull request
-        if: (failure() || cancelled()) && steps.check.outputs.check-id == ''
+        if: failure() || cancelled()
         env:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          CHECK_ID: ${{ steps.check.outputs.check-id }}
         run: |
-          python3 -B scripts/pr-infrastructure-check.py fail \
-            --repository "$GITHUB_REPOSITORY" --head "$HEAD_SHA"
+          arguments=(--repository "$GITHUB_REPOSITORY" --head "$HEAD_SHA")
+          if [[ -n "$CHECK_ID" ]]; then
+            arguments+=(--check-id "$CHECK_ID")
+          fi
+          python3 -B scripts/pr-infrastructure-check.py fail "${arguments[@]}"
 
   plan:
     needs: identify

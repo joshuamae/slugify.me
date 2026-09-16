@@ -194,6 +194,15 @@ def fail(repository, head=None, check_id=None):
         return
     if not SHA.fullmatch(head or ""):
         raise ValueError("Invalid head revision")
+    # A cancelled begin may have created a check without publishing its ID.
+    existing = api(f"repos/{repository}/commits/{head}/check-runs?check_name=AWS%20pre-merge&filter=all&per_page=100")
+    pending = [item for item in existing.get("check_runs", [])
+               if item.get("name") == CHECK_NAME and item.get("details_url") == url
+               and item.get("status") != "completed" and type(item.get("id")) is int]
+    for item in pending:
+        complete(repository, item["id"], "failure", title, summary)
+    if pending:
+        return
     api(f"repos/{repository}/check-runs", "POST", {
         "name": CHECK_NAME, "head_sha": head, "status": "completed", "conclusion": "failure",
         "details_url": url, "output": {"title": title, "summary": summary}})
