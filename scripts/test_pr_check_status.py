@@ -131,9 +131,7 @@ class PreMergeStatusTests(unittest.TestCase):
             self.assertEqual(check.plan_errors(REPOSITORY), [])
 
     def begin_with(self, associated, pulls, run=None, default_branch="main"):
-        responses = [{"id": 3, "default_branch": default_branch}, {"id": 900}, associated, *pulls, {}, {}]
-        if default_branch != "main":
-            responses = [responses[0], responses[1], {}]
+        responses = [{"id": 3, "default_branch": default_branch}, associated, *pulls, {"id": 900}, {}]
         with tempfile.NamedTemporaryFile("r") as output, \
                 patch.dict(os.environ, {**RUN_ENV, "GITHUB_OUTPUT": output.name}), \
                 patch.object(check, "source_run", return_value=run or source()), \
@@ -148,16 +146,29 @@ class PreMergeStatusTests(unittest.TestCase):
     def test_begin_publishes_the_check_before_binding_the_pr(self):
         calls, outputs, raised = self.begin_with([{"number": 7}], [pull()])
         self.assertIsNone(raised)
-        created = calls[1]
+        created = calls[3]
         self.assertEqual(created.args[:2], (f"repos/{REPOSITORY}/check-runs", "POST"))
         self.assertTrue(created.args[2]["external_id"].startswith("premerge-pending:"))
         self.assertEqual(calls[-1].args[2], {"external_id": check.external_id(3, pull(), source())})
         self.assertTrue(outputs.startswith("check-id=900\n"))
         self.assertIn("run-plans=true", outputs)
 
+    def test_begin_skips_revisions_without_an_open_pr_against_main(self):
+        stacked = copy.deepcopy(pull())
+        stacked["base"]["ref"] = "feature-a"
+        superseded = copy.deepcopy(pull())
+        superseded["head"]["sha"] = "c" * 40
+        for pulls in [[{**pull(), "state": "closed"}], [stacked], [superseded], []]:
+            with self.subTest(pulls=pulls):
+                calls, outputs, raised = self.begin_with([{"number": 7}] if pulls else [], pulls)
+                self.assertIsNone(raised)
+                self.assertNotIn("POST", [call.args[1] for call in calls if len(call.args) > 1])
+                self.assertEqual(outputs, "")
+
     def test_begin_reports_binding_failures_on_the_pr(self):
-        closed = {**pull(), "state": "closed"}
-        calls, outputs, raised = self.begin_with([{"number": 7}], [closed])
+        other_fork = copy.deepcopy(pull())
+        other_fork["head"]["repo"]["id"] = 99
+        calls, outputs, raised = self.begin_with([{"number": 7}], [other_fork])
         self.assertRegex(str(raised), "found 0")
         final = calls[-1]
         self.assertEqual(final.args[:2], (f"repos/{REPOSITORY}/check-runs/900", "PATCH"))
@@ -173,11 +184,11 @@ class PreMergeStatusTests(unittest.TestCase):
         self.assertNotIn("run-plans", outputs)
 
     def test_begin_rejects_a_default_branch_other_than_main(self):
+        # The workflow's fallback step reports this failure on the PR head.
         calls, outputs, raised = self.begin_with([], [], default_branch="develop")
         self.assertRegex(str(raised), "default branch")
-        self.assertEqual([call.args[1] for call in calls[1:]], ["POST", "PATCH"])
-        self.assertEqual(calls[-1].args[2]["conclusion"], "failure")
-        self.assertNotIn("run-plans", outputs)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(outputs, "")
 
     def test_failed_upstream_run_does_not_enable_aws_planning(self):
         calls, outputs, raised = self.begin_with([{"number": 7}], [pull()],
@@ -185,6 +196,23 @@ class PreMergeStatusTests(unittest.TestCase):
         self.assertIsNone(raised)
         self.assertIn("run-plans=false", outputs)
         self.assertNotIn("run-plans=true", outputs)
+
+    def test_finish_is_a_no_op_when_begin_created_no_check(self):
+        arguments = ["pr-infrastructure-check.py", "finish", "--repository", REPOSITORY, "--run", "11",
+                     "--attempt", "1", "--check-id", "", "--pr", "", "--head", "", "--base", "",
+                     "--result", "skipped"]
+        with patch("sys.argv", arguments), patch.object(check, "api") as api, \
+                patch.object(check, "finish") as finish:
+            check.main()
+        api.assert_not_called()
+        finish.assert_not_called()
+
+    def test_fail_by_head_still_reports_when_the_lookup_fails(self):
+        responses = [subprocess.CalledProcessError(1, ["gh"]), {}]
+        with patch.dict(os.environ, RUN_ENV), patch.object(check, "api", side_effect=responses) as api:
+            check.fail(REPOSITORY, head=HEAD)
+        self.assertEqual(api.call_args.args[:2], (f"repos/{REPOSITORY}/check-runs", "POST"))
+        self.assertEqual(api.call_args.args[2]["conclusion"], "failure")
 
     def test_fail_by_head_completes_this_runs_pending_check_instead_of_adding_one(self):
         runs = {"check_runs": [

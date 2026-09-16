@@ -298,6 +298,14 @@ def parse_template(raw):
     return validate_template_data(yaml.load(raw, Loader=TemplateLoader))
 
 
+def monitoring_templates(config):
+    """Select monitoring policy targets by trusted stack, so renaming a template cannot skip Guard."""
+    stacks = {item["stack"] for items in trusted_config().values() for item in items
+              if item["template"] == "infra/monitoring.yaml"}
+    return sorted({item["template"] for items in config.values() for item in items
+                   if item["stack"] in stacks or item["template"] == "infra/monitoring.yaml"})
+
+
 def prepared_path(path):
     """Derive output paths from validated infra/ template paths only."""
     return "prepared/" + str(Path(path).with_suffix(".json"))
@@ -347,9 +355,9 @@ def prepare(directory):
         prepared["templates"][path] = deployment.digest(content)
     run_validator(["cfn-lint", "--regions", "us-east-1", "--template",
                    *[str(directory / prepared_path(path)) for path in paths]], "cfn-lint")
-    if "infra/monitoring.yaml" in paths:
+    for path in monitoring_templates(candidate_targets(directory)):
         run_validator(["cfn-guard", "validate", "--rules", str(ROOT / "infra/monitoring.guard"),
-                       "--data", str(directory / prepared_path("infra/monitoring.yaml"))], "cfn-guard")
+                       "--data", str(directory / prepared_path(path))], "cfn-guard")
     (directory / "prepared.json").write_text(json.dumps(prepared, indent=2) + "\n")
 
 
@@ -474,6 +482,16 @@ def failure_report(environment, error):
                       "```text", error_text(error).replace("`", "'"), "```", ""])
 
 
+def with_deployment_hint(error):
+    """Explain failures caused by a deployment updating the same stack during planning."""
+    message = str(error)
+    # Executing any change set deletes the stack's other change sets, including this preflight's.
+    if "ChangeSetNotFound" in message or "_IN_PROGRESS" in message:
+        return RuntimeError(f"{message}\nA deployment was probably updating this stack. "
+                            "Rerun the PR checks after it finishes.")
+    return error
+
+
 def annotation(title, error):
     """Encode an error as one workflow-command line so the report job can read it."""
     message = error_text(error).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
@@ -513,6 +531,7 @@ def main():
         if isinstance(error, KeyboardInterrupt):
             error = RuntimeError("Planning was interrupted, usually by the step timeout")
         if args.action == "plan":
+            error = with_deployment_hint(error)
             with args.report.open("a") as stream:
                 stream.write(failure_report(args.environment, error))
         print_untrusted(f"{title} failed:\n{error_text(error)}")

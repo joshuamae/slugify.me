@@ -78,11 +78,26 @@ def external_id(repository_id, pr, run):
             f"{run['run_attempt']}:{pr['head']['sha']}:{pr['base']['sha']}")
 
 
+def targets_main(pr, run, repository):
+    """Report whether a PR at this exact revision is one AWS pre-merge must gate."""
+    return (pr["state"] == "open" and pr["head"]["sha"] == run["head_sha"]
+            and pr["base"]["ref"] == "main" and pr["base"]["repo"]["full_name"] == repository)
+
+
 def begin(repository, run_id, attempt):
-    """Create the check first, then bind it to fresh PR metadata, including fork PRs."""
+    """Create a check only for open PRs against main, then bind it to fresh PR metadata."""
     repo = api(f"repos/{repository}")
     run = source_run(repository, run_id, attempt)
     url = run_url(repository)
+    if repo["default_branch"] != "main":
+        raise ValueError("Review preflight protection before changing the default branch")
+    # Commit association works when workflow_run.pull_requests is empty for a fork.
+    associated = api(f"repos/{repository}/commits/{run['head_sha']}/pulls?per_page=100")
+    pulls = [api(f"repos/{repository}/pulls/{int(item['number'])}") for item in associated]
+    if not any(targets_main(pr, run, repository) for pr in pulls):
+        # PRs against other branches, and superseded revisions, need no AWS pre-merge result.
+        print(f"No open pull request against main is at {run['head_sha']}; skipping AWS pre-merge.")
+        return
     # A pending identity can never satisfy the required-check rollout helper.
     check = api(f"repos/{repository}/check-runs", "POST", {
         "name": CHECK_NAME, "head_sha": run["head_sha"], "status": "in_progress",
@@ -92,15 +107,7 @@ def begin(repository, run_id, attempt):
                    "Testing the real planning roles without executing changes."}})
     write_outputs({"check-id": check["id"]})
     try:
-        if repo["default_branch"] != "main":
-            raise ValueError("Review preflight protection before changing the default branch")
-        # Commit association works when workflow_run.pull_requests is empty for a fork.
-        associated = api(f"repos/{repository}/commits/{run['head_sha']}/pulls?per_page=100")
-        candidates = []
-        for item in associated:
-            pr = api(f"repos/{repository}/pulls/{int(item['number'])}")
-            if matches(pr, run, repository):
-                candidates.append(pr)
+        candidates = [pr for pr in pulls if matches(pr, run, repository)]
         if len(candidates) != 1:
             raise ValueError(f"Expected exactly one current open PR against main for {run['head_sha']}; "
                              f"found {len(candidates)}")
@@ -195,17 +202,25 @@ def fail(repository, head=None, check_id=None):
     if not SHA.fullmatch(head or ""):
         raise ValueError("Invalid head revision")
     # A cancelled begin may have created a check without publishing its ID.
-    existing = api(f"repos/{repository}/commits/{head}/check-runs?check_name=AWS%20pre-merge&filter=all&per_page=100")
-    pending = [item for item in existing.get("check_runs", [])
-               if item.get("name") == CHECK_NAME and item.get("details_url") == url
-               and item.get("status") != "completed" and type(item.get("id")) is int]
-    for item in pending:
-        complete(repository, item["id"], "failure", title, summary)
-    if pending:
-        return
+    try:
+        existing = api(f"repos/{repository}/commits/{head}/check-runs?check_name=AWS%20pre-merge&filter=all&per_page=100")
+        pending = [item for item in existing.get("check_runs", [])
+                   if item.get("name") == CHECK_NAME and item.get("details_url") == url
+                   and item.get("status") != "completed" and type(item.get("id")) is int]
+        for item in pending:
+            complete(repository, item["id"], "failure", title, summary)
+        if pending:
+            return
+    except (subprocess.CalledProcessError, ValueError, KeyError, TypeError, AttributeError):
+        pass  # The lookup is best effort; still report a failure below.
     api(f"repos/{repository}/check-runs", "POST", {
         "name": CHECK_NAME, "head_sha": head, "status": "completed", "conclusion": "failure",
         "details_url": url, "output": {"title": title, "summary": summary}})
+
+
+def optional_int(value):
+    """Accept the empty job outputs left when begin skips a revision."""
+    return int(value) if value else None
 
 
 def main():
@@ -214,8 +229,8 @@ def main():
     parser.add_argument("--repository", required=True)
     parser.add_argument("--run", type=int)
     parser.add_argument("--attempt", type=int)
-    parser.add_argument("--check-id", type=int)
-    parser.add_argument("--pr", type=int)
+    parser.add_argument("--check-id", type=optional_int)
+    parser.add_argument("--pr", type=optional_int)
     parser.add_argument("--head")
     parser.add_argument("--base")
     parser.add_argument("--result", choices=["success", "failure", "cancelled", "skipped"])
@@ -232,6 +247,10 @@ def main():
     if args.action == "begin":
         begin(args.repository, args.run, args.attempt)
     else:
+        if not any([args.check_id, args.pr, args.head, args.base]):
+            # begin succeeded without creating a check, so there is no result to publish.
+            print("No AWS pre-merge check was created for this revision.")
+            return
         if not all([args.check_id, args.pr, args.head, args.base, args.result]):
             parser.error("Finish requires the original check and PR identity")
         finish(args.repository, args.run, args.attempt, args.check_id, args.pr,
