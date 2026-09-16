@@ -1,0 +1,50 @@
+let topics = Resources.*[ Type == 'AWS::SNS::Topic' ]
+let keys = Resources.*[ Type == 'AWS::KMS::Key' ]
+let alarms = Resources.*[ Type == 'AWS::CloudWatch::Alarm' ]
+let subscriptions = Resources.*[ Type == 'AWS::SNS::Subscription' ]
+let policies = Resources.*[ Type == 'AWS::SNS::TopicPolicy' ]
+
+rule alarm_notifications_are_encrypted when %topics !empty {
+    %topics.Properties.KmsMasterKeyId exists
+    %topics.Properties.Tags !empty
+}
+
+rule keys_are_retained_and_rotated when %keys !empty {
+    %keys.DeletionPolicy == 'Retain'
+    %keys.UpdateReplacePolicy == 'Retain'
+    %keys.Properties.EnableKeyRotation == true
+}
+
+rule cloudwatch_key_access_is_scoped when %keys !empty {
+    %keys.Properties.KeyPolicy.Statement[
+        Sid == 'AllowCloudWatchAlarmEncryption'
+    ] {
+        Principal.Service == 'cloudwatch.amazonaws.com'
+        Condition.StringEquals.'aws:SourceAccount' exists
+        Condition.ArnLike.'aws:SourceArn' exists
+    }
+}
+
+rule service_publishing_is_scoped when %policies !empty {
+    %policies.Properties.PolicyDocument.Statement[
+        Effect == 'Allow'
+    ] {
+        Principal.Service == 'cloudwatch.amazonaws.com'
+        Action == 'sns:Publish'
+        Condition.StringEquals.'aws:SourceAccount' exists
+        Condition.ArnLike.'aws:SourceArn' exists
+    }
+}
+
+rule alarms_have_actions_and_explicit_evaluation when %alarms !empty {
+    %alarms.Properties.AlarmActions !empty
+    %alarms.Properties.OKActions !empty
+    %alarms.Properties.TreatMissingData == 'notBreaching'
+    %alarms.Properties.DatapointsToAlarm >= 2
+    %alarms.Properties.EvaluationPeriods >= 3
+    %alarms.Properties.Tags !empty
+}
+
+rule subscriptions_use_email when %subscriptions !empty {
+    %subscriptions.Properties.Protocol == 'email'
+}

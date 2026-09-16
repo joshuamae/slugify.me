@@ -113,6 +113,11 @@ Resources:
             Url: https://token.actions.githubusercontent.com
             ClientIdList:
                 - sts.amazonaws.com
+            Tags:
+                - Key: Project
+                  Value: static-site
+                - Key: Environment
+                  Value: shared
 
     SiteBucket:
         Type: AWS::S3::Bucket
@@ -286,43 +291,27 @@ Resources:
                         ContentSecurityPolicy: "frame-ancestors 'none'; object-src 'none'; base-uri 'self'"
                         Override: true
 
-    CachePolicy:
-        Type: AWS::CloudFront::CachePolicy
-        Metadata:
-            com.aws.cloudformation.Context:
-                why: Let each uploaded file control its cache duration
-                must:
-                    - Keep the minimum TTL at zero so HTML can revalidate
-        Properties:
-            CachePolicyConfig:
-                Name: !Sub '${AWS::StackName}-cache'
-                MinTTL: 0
-                DefaultTTL: 0
-                MaxTTL: 31536000
-                ParametersInCacheKeyAndForwardedToOrigin:
-                    EnableAcceptEncodingGzip: true
-                    EnableAcceptEncodingBrotli: true
-                    CookiesConfig:
-                        CookieBehavior: none
-                    HeadersConfig:
-                        HeaderBehavior: none
-                    QueryStringsConfig:
-                        QueryStringBehavior: none
-
     Distribution:
         Type: AWS::CloudFront::Distribution
         Metadata:
             com.aws.cloudformation.Context:
-                why: Deliver public production and password-protected staging over HTTPS
+                why: Deliver public production and password-protected staging over HTTPS using managed cache policies compatible with the Free plan
                 must:
                     - Authenticate staging on viewer-request, including cache hits
                     - Attach indexing and browser cache restrictions only to staging
+                    - Apply the viewer-request function and staging response headers to every cache behavior
+                    - Disable edge caching for HTML and unversioned files, and cache only hashed assets under /assets/
                     - Keep S3 access authenticated through OAC
                     - Serve only the site prefix from the origin
                     - Preserve errors instead of replacing them with homepage HTML
                     - Attach an issued certificate before changing public DNS
                     - Redirect the CloudFront hostname when a primary domain is configured
         Properties:
+            Tags:
+                - Key: Project
+                  Value: static-site
+                - Key: Environment
+                  Value: !Ref Environment
             DistributionConfig:
                 Enabled: true
                 Comment: !Sub '${AWS::StackName} website'
@@ -350,7 +339,8 @@ Resources:
                         - GET
                         - HEAD
                     Compress: true
-                    CachePolicyId: !Ref CachePolicy
+                    # AWS managed CachingDisabled keeps HTML and unversioned files fresh
+                    CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
                     ResponseHeadersPolicyId: !If
                         - IsStaging
                         - !Ref StagingResponseHeaders
@@ -358,6 +348,26 @@ Resources:
                     FunctionAssociations:
                         - EventType: viewer-request
                           FunctionARN: !GetAtt PageRewrite.FunctionARN
+                CacheBehaviors:
+                    - PathPattern: /assets/*
+                      TargetOriginId: site
+                      ViewerProtocolPolicy: redirect-to-https
+                      AllowedMethods:
+                          - GET
+                          - HEAD
+                      CachedMethods:
+                          - GET
+                          - HEAD
+                      Compress: true
+                      # AWS managed CachingOptimized honors the assets' one-year cache headers
+                      CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+                      ResponseHeadersPolicyId: !If
+                          - IsStaging
+                          - !Ref StagingResponseHeaders
+                          - !Ref AWS::NoValue
+                      FunctionAssociations:
+                          - EventType: viewer-request
+                            FunctionARN: !GetAtt PageRewrite.FunctionARN
                 CustomErrorResponses:
                     - ErrorCode: 403
                       ErrorCachingMinTTL: 0
@@ -425,6 +435,11 @@ Resources:
                     - Preserve immutable owner and repository IDs in the GitHub subject prefix when enabled
                     - Keep infrastructure administration outside this role
         Properties:
+            Tags:
+                - Key: Project
+                  Value: static-site
+                - Key: Environment
+                  Value: !Ref Environment
             AssumeRolePolicyDocument:
                 Version: '2012-10-17'
                 Statement:
