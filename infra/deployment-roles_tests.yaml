@@ -283,8 +283,8 @@
                                   Condition: &pre_merge_names
                                       StringLike:
                                           cloudformation:ChangeSetName:
-                                              - Fn::Sub: 'github-${Environment}-pr-*'
-                                              - Fn::Sub: 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/github-${Environment}-pr-*/*'
+                                              - Fn::Sub: 'premerge-${Environment}-*'
+                                              - Fn::Sub: 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/premerge-${Environment}-*/*'
   expectations:
       rules:
           planner_cleanup_only_deletes_pre_merge_change_sets: PASS
@@ -343,3 +343,133 @@
   expectations:
       rules:
           planner_cleanup_only_deletes_pre_merge_change_sets: FAIL
+
+- name: Executor runs only deployment change sets
+  input:
+      Resources:
+          Executor:
+              Properties:
+                  Policies:
+                      - PolicyName: ExecuteReviewedChanges
+                        PolicyDocument:
+                            Statement:
+                                - &executor_change_sets
+                                  Effect: Allow
+                                  Action:
+                                      - cloudformation:ExecuteChangeSet
+                                      - cloudformation:DeleteChangeSet
+                                  Resource: { Ref: StackArns }
+                                  Condition:
+                                      StringLike:
+                                          cloudformation:ChangeSetName:
+                                              - Fn::Sub: 'github-${Environment}-*'
+                                              - Fn::Sub: 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/github-${Environment}-*/*'
+                                - Effect: Allow
+                                  Action: [s3:ListBucket, iam:GetRole]
+                                  Resource: { Ref: ResourceArns }
+                                - Fn::If:
+                                      - HasStagingAuthSecret
+                                      - Effect: Allow
+                                        Action: secretsmanager:GetSecretValue
+                                        Resource: { Ref: StagingAuthSecretArn }
+                                      - Ref: AWS::NoValue
+                                - Effect: Allow
+                                  Action: route53:GetChange
+                                  Resource: 'arn:aws:route53:::change/*'
+  expectations:
+      rules:
+          executor_cannot_run_pre_merge_change_sets: PASS
+
+- name: Executor cannot run pre-merge change sets
+  input:
+      Resources:
+          Executor:
+              Properties:
+                  Policies:
+                      - PolicyName: ExecuteReviewedChanges
+                        PolicyDocument:
+                            Statement:
+                                - Effect: Allow
+                                  Action:
+                                      - cloudformation:ExecuteChangeSet
+                                      - cloudformation:DeleteChangeSet
+                                  Resource: { Ref: StackArns }
+                                  Condition:
+                                      StringLike:
+                                          cloudformation:ChangeSetName:
+                                              - Fn::Sub: 'github-${Environment}-*'
+                                              - Fn::Sub: 'premerge-${Environment}-*'
+  expectations:
+      rules:
+          executor_cannot_run_pre_merge_change_sets: FAIL
+
+- name: Executor change-set names cannot use a wildcard
+  input:
+      Resources:
+          Executor:
+              Properties:
+                  Policies:
+                      - PolicyName: ExecuteReviewedChanges
+                        PolicyDocument:
+                            Statement:
+                                - Effect: Allow
+                                  Action:
+                                      - cloudformation:ExecuteChangeSet
+                                      - cloudformation:DeleteChangeSet
+                                  Resource: { Ref: StackArns }
+                                  Condition:
+                                      StringLike:
+                                          cloudformation:ChangeSetName: '*'
+  expectations:
+      rules:
+          executor_cannot_run_pre_merge_change_sets: FAIL
+
+- name: Executor cannot add a separate unrestricted execution statement
+  input:
+      Resources:
+          Executor:
+              Properties:
+                  Policies:
+                      - PolicyName: ExecuteReviewedChanges
+                        PolicyDocument:
+                            Statement:
+                                - *executor_change_sets
+                                - Effect: Allow
+                                  Action: cloudformation:ExecuteChangeSet
+                                  Resource: { Ref: StackArns }
+  expectations:
+      rules:
+          executor_cannot_run_pre_merge_change_sets: FAIL
+
+- name: Executor cannot receive wildcard actions
+  input:
+      Resources:
+          Executor:
+              Properties:
+                  Policies:
+                      - PolicyName: ExecuteReviewedChanges
+                        PolicyDocument:
+                            Statement:
+                                - *executor_change_sets
+                                - Effect: Allow
+                                  Action: '*'
+                                  Resource: { Ref: StackArns }
+  expectations:
+      rules:
+          executor_cannot_run_pre_merge_change_sets: FAIL
+
+- name: Missing executor change-set permissions fail instead of skipping
+  input:
+      Resources:
+          Executor:
+              Properties:
+                  Policies:
+                      - PolicyName: ExecuteReviewedChanges
+                        PolicyDocument:
+                            Statement:
+                                - Effect: Allow
+                                  Action: route53:GetChange
+                                  Resource: 'arn:aws:route53:::change/*'
+  expectations:
+      rules:
+          executor_cannot_run_pre_merge_change_sets: FAIL

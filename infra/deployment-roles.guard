@@ -28,8 +28,24 @@ let expected_pre_merge_cleanup = {
     "Condition": {
         "StringLike": {
             "cloudformation:ChangeSetName": [
-                {"Fn::Sub": "github-${Environment}-pr-*"},
-                {"Fn::Sub": "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/github-${Environment}-pr-*/*"}
+                {"Fn::Sub": "premerge-${Environment}-*"},
+                {"Fn::Sub": "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/premerge-${Environment}-*/*"}
+            ]
+        }
+    }
+}
+let expected_executor_change_sets = {
+    "Effect": "Allow",
+    "Action": [
+        "cloudformation:ExecuteChangeSet",
+        "cloudformation:DeleteChangeSet"
+    ],
+    "Resource": {"Ref": "StackArns"},
+    "Condition": {
+        "StringLike": {
+            "cloudformation:ChangeSetName": [
+                {"Fn::Sub": "github-${Environment}-*"},
+                {"Fn::Sub": "arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/github-${Environment}-*/*"}
             ]
         }
     }
@@ -60,4 +76,15 @@ rule planner_cleanup_only_deletes_pre_merge_change_sets {
     ]
     %cleanup !empty
     %cleanup == %expected_pre_merge_cleanup
+}
+
+# Pull request templates use the premerge- prefix, which the executor's github- names never match
+rule executor_cannot_run_pre_merge_change_sets {
+    let statements = Resources.Executor.Properties.Policies[*].PolicyDocument.Statement[*]
+    let change_set_statements = %statements[
+        Action == /^(cloudformation:.*|\*)$/ OR
+        some Action[*] == /^(cloudformation:.*|\*)$/
+    ]
+    %change_set_statements !empty
+    %change_set_statements == %expected_executor_change_sets
 }

@@ -55,6 +55,7 @@ Resources:
                 must:
                     - Trust only the exact repository and matching plan environment
                     - Do not allow execution, role passing, or direct resource changes
+                    - Create temporary pre-merge change sets only under a prefix the executor cannot run
                     - Delete only temporary pre-merge change sets
         Properties:
             AssumeRolePolicyDocument:
@@ -89,6 +90,8 @@ Resources:
                                     cloudformation:ChangeSetName:
                                         - !Sub 'github-${Environment}-*'
                                         - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/github-${Environment}-*/*'
+                                        - !Sub 'premerge-${Environment}-*'
+                                        - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/premerge-${Environment}-*/*'
                                 'Null':
                                     cloudformation:RoleArn: 'true'
                           - Sid: CleanupPreMergeChangeSets
@@ -98,8 +101,8 @@ Resources:
                             Condition:
                                 StringLike:
                                     cloudformation:ChangeSetName:
-                                        - !Sub 'github-${Environment}-pr-*'
-                                        - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/github-${Environment}-pr-*/*'
+                                        - !Sub 'premerge-${Environment}-*'
+                                        - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/premerge-${Environment}-*/*'
     Executor:
         Type: AWS::IAM::Role
         Metadata:
@@ -111,6 +114,7 @@ Resources:
                     - Keep application uploads in the separate publisher role
                     - Keep execution credentials valid through sequential stack updates and verification
                     - Allow secret reads only for the staging authentication secret in staging
+                    - Never run temporary pre-merge change sets built from pull request templates
         Properties:
             MaxSessionDuration: 10800
             AssumeRolePolicyDocument:

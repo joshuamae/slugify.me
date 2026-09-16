@@ -19,12 +19,27 @@ performs live AWS planning checks for the proposed templates once its
 4. Resolve any failure and wait for checks on the updated revision before merging
 
 The AWS check runs workflow and helper code from trusted `main`. It reads the
-allowlisted proposed templates as data and validates them in an offline
-container without credentials. It does not run scripts or actions from the pull
-request with AWS credentials. It then uses the existing planning roles to create
-temporary change sets, inspect validation results and call `DescribeEvents`,
-including when AWS reports no infrastructure changes. It deletes its temporary
-change sets and never executes them.
+pull request's `infra/deployments.json` and the templates it lists as data, then
+validates them in an offline container without credentials. It does not run
+scripts or actions from the pull request with AWS credentials. It then uses the
+existing planning roles to create temporary change sets, inspect validation
+results and call `DescribeEvents`, including when AWS reports no infrastructure
+changes. It deletes its temporary change sets and never executes them.
+Temporary change sets use the `premerge-<environment>-` prefix, which the
+execution roles cannot run.
+
+When the check fails, open **AWS pre-merge** on the pull request. Its summary
+quotes each cfn-lint, Guard or CloudFormation error reported by the planning
+jobs and links to the workflow run for full logs. If the workflow stops before
+it can plan, the check still fails with a link instead of remaining pending.
+
+A pull request can add a deployment target or a standard `AWS::` resource type
+without merging first:
+
+- Deployment targets must use a stack name and a template directly inside `infra/`
+- A new stack must already exist and be included in the planning role scope; otherwise the check explains that bootstrap is required
+- Custom resources, modules, third-party types and the `AWS::CloudFormation`, `AWS::Lambda` and `AWS::Serverless` namespaces are rejected before AWS is called
+- Changes to the trusted workflow or helper scripts take effect only after they reach `main`
 
 Expected result: the required checks pass for the latest revision before merge.
 This catches template validation errors and live planning or event-read
@@ -238,9 +253,13 @@ credentials before running the updated workflow. The pipeline cannot update
 its own roles. The current template includes three-hour execution sessions,
 secret reads restricted to staging authentication and a separate
 `cloudformation:DescribeEvents` permission for both planning and execution.
-Planning roles also receive `cloudformation:DeleteChangeSet` for temporary
-`github-<environment>-pr-*` change sets on their existing stacks. This cleanup
-permission cannot delete the ordinary deployment plans awaiting approval.
+Planning roles can also create and delete temporary `premerge-<environment>-*`
+change sets on their existing stacks. This cleanup permission cannot delete the
+ordinary deployment plans awaiting approval. Execution roles run only
+`github-<environment>-*` change sets, so a temporary change set left behind by
+an interrupted pull request check cannot be executed. Apply this update before
+rolling out **AWS pre-merge checks**; otherwise its change-set creation is
+denied.
 
 The event-read statement uses `Resource: '*'` with `aws:RequestedRegion` equal
 to the bootstrap stack's region. This permits reading CloudFormation operation
@@ -349,6 +368,9 @@ for how the requested duration and role maximum work together.
 | Monitoring subscription fails verification          | Follow the [deployed email filter checks](aws-operations.md#verify-the-deployed-email-filter)                       |
 | AWS CLI does not recognize `describe-events`        | Update AWS CLI v2 before running the deployment helper                                                              |
 | `DescribeEvents` access denied during planning      | Apply the [role update](#update-existing-infrastructure-roles), then start a new complete workflow run              |
+| Pre-merge change-set creation is denied             | Apply the [role update](#update-existing-infrastructure-roles) for the `premerge-` prefix, then rerun the PR checks |
+| Pre-merge check reports a new target is unreadable  | Create the stack and add it to the planning role scope before rerunning the PR checks                               |
+| Pre-merge temporary change set remains              | Delete the `premerge-<environment>-*` change set; execution roles cannot run it                                     |
 | Plan changed while approval was pending             | Inspect the live stack, then start a new workflow run from current `main`                                           |
 | Rerunning only failed jobs rejects the plan         | Start a new complete run; plans are bound to their original run attempt                                             |
 | New resource or permission is denied                | Review and update the bootstrap role scope before retrying; avoid administrator policies in CI                      |

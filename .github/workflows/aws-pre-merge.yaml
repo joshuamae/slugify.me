@@ -47,6 +47,15 @@ jobs:
         run: |
           python3 -B scripts/pr-infrastructure-check.py begin \
             --repository "$GITHUB_REPOSITORY" --run "$SOURCE_RUN" --attempt "$SOURCE_ATTEMPT"
+      # A failure can never pass, so report it on the PR instead of leaving a missing check.
+      - name: Report a failure to start on the pull request
+        if: (failure() || cancelled()) && steps.check.outputs.check-id == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          python3 -B scripts/pr-infrastructure-check.py fail \
+            --repository "$GITHUB_REPOSITORY" --head "$HEAD_SHA"
 
   plan:
     needs: identify
@@ -83,7 +92,7 @@ jobs:
       - name: Validate candidate data without AWS credentials or network access
         run: |
           docker build --tag static-site-infra-checks tools/infrastructure
-          docker run --rm --network none --entrypoint python3 \
+          docker run --rm --network none --env GITHUB_ACTIONS --entrypoint python3 \
             --mount "type=bind,src=$GITHUB_WORKSPACE,dst=/workspace,readonly" \
             --mount "type=bind,src=$RUNNER_TEMP/candidate,dst=/candidate" \
             static-site-infra-checks -B scripts/check-pr-infrastructure.py prepare --directory /candidate
@@ -104,7 +113,8 @@ jobs:
 
   report:
     needs: [identify, plan]
-    if: always() && needs.identify.outputs.check-id != ''
+    # A failed identify job has already reported its own failure on the PR.
+    if: always() && needs.identify.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -118,6 +128,7 @@ jobs:
           ref: ${{ github.sha }}
           persist-credentials: false
       - name: Publish the result only for the tested revision
+        id: finish
         env:
           GH_TOKEN: ${{ github.token }}
           SOURCE_RUN: ${{ github.event.workflow_run.id }}
@@ -132,3 +143,11 @@ jobs:
             --repository "$GITHUB_REPOSITORY" --run "$SOURCE_RUN" --attempt "$SOURCE_ATTEMPT" \
             --check-id "$CHECK_ID" --pr "$PR_NUMBER" --head "$PR_HEAD" --base "$PR_BASE" \
             --result "$PLAN_RESULT"
+      - name: Report an unexpected reporting failure on the pull request
+        if: (failure() || cancelled()) && steps.finish.outputs.completed != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CHECK_ID: ${{ needs.identify.outputs.check-id }}
+        run: |
+          python3 -B scripts/pr-infrastructure-check.py fail \
+            --repository "$GITHUB_REPOSITORY" --check-id "$CHECK_ID"

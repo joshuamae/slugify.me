@@ -2,7 +2,10 @@
 
 import copy
 import importlib.util
+import os
 from pathlib import Path
+import subprocess
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -14,6 +17,8 @@ spec.loader.exec_module(check)
 REPOSITORY = "example/site"
 HEAD = "a" * 40
 BASE = "b" * 40
+RUN_ENV = {"GITHUB_RUN_ID": "500", "GITHUB_RUN_ATTEMPT": "1"}
+RUN_URL = f"https://github.com/{REPOSITORY}/actions/runs/500"
 
 
 def source():
@@ -58,17 +63,21 @@ class PreMergeStatusTests(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertFalse(check.matches(pr, source(), REPOSITORY))
 
-    def finish_response(self, pr=None, run=None, result="success", identity=None):
+    def finish_response(self, pr=None, run=None, result="success", identity=None, errors=()):
         run = run or source()
         original = {"name": check.CHECK_NAME, "head_sha": HEAD,
                     "external_id": identity or check.external_id(3, pull(), source())}
         responses = [{"id": 3}, pr or pull(), original, {}]
-        with patch.object(check, "source_run", return_value=run), \
+        with patch.dict(os.environ, RUN_ENV), \
+                patch.object(check, "source_run", return_value=run), \
+                patch.object(check, "plan_errors", return_value=list(errors)), \
+                patch.object(check, "write_outputs") as outputs, \
                 patch.object(check, "api", side_effect=responses) as api:
             try:
                 check.finish(REPOSITORY, 11, 1, 123, 7, HEAD, BASE, result)
             except SystemExit:
                 pass
+            self.outputs = outputs.call_args_list
             return api.call_args
 
     def test_success_requires_both_environment_plans(self):
@@ -94,6 +103,85 @@ class PreMergeStatusTests(unittest.TestCase):
     def test_wrong_check_identity_fails_before_any_success_write(self):
         with self.assertRaisesRegex(ValueError, "provenance"):
             self.finish_response(identity="premerge:another-run")
+
+    def test_failure_summary_quotes_planner_errors_inertly(self):
+        errors = ["plan (staging): Bucket: name already exists", "plan (production): ```\n# injected"]
+        result = self.finish_response(result="failure", errors=errors)
+        summary = result.args[2]["output"]["summary"]
+        self.assertIn("Bucket: name already exists", summary)
+        self.assertEqual(summary.count("```"), 2)
+        self.assertIn(RUN_URL, summary)
+        self.assertEqual([call.args[0] for call in self.outputs], [{"completed": "true"}])
+
+    def test_failed_upstream_summary_points_to_validate_infrastructure(self):
+        result = self.finish_response(run={**source(), "conclusion": "failure"}, result="skipped")
+        self.assertIn("Validate infrastructure", result.args[2]["output"]["summary"])
+
+    def test_plan_errors_ignore_generic_exit_annotations_and_lookup_failures(self):
+        jobs = {"jobs": [{"id": 1, "name": "plan (staging)", "conclusion": "failure"},
+                         {"id": 2, "name": "plan (production)", "conclusion": "success"}]}
+        annotations = [{"annotation_level": "failure", "message": "Process completed with exit code 1."},
+                       {"annotation_level": "failure", "message": "cfn-lint reported problems"},
+                       {"annotation_level": "warning", "message": "Node deprecation"}]
+        with patch.dict(os.environ, RUN_ENV), patch.object(check, "api", side_effect=[jobs, annotations]) as api:
+            self.assertEqual(check.plan_errors(REPOSITORY), ["plan (staging): cfn-lint reported problems"])
+        self.assertEqual(api.call_args_list[0].args[0], f"repos/{REPOSITORY}/actions/runs/500/attempts/1/jobs?per_page=100")
+        failure = subprocess.CalledProcessError(1, ["gh"])
+        with patch.dict(os.environ, RUN_ENV), patch.object(check, "api", side_effect=failure):
+            self.assertEqual(check.plan_errors(REPOSITORY), [])
+
+    def begin_with(self, associated, pulls):
+        responses = [{"id": 3, "default_branch": "main"}, {"id": 900}, associated, *pulls, {}, {}]
+        with tempfile.NamedTemporaryFile("r") as output, \
+                patch.dict(os.environ, {**RUN_ENV, "GITHUB_OUTPUT": output.name}), \
+                patch.object(check, "source_run", return_value=source()), \
+                patch.object(check, "api", side_effect=responses) as api:
+            try:
+                check.begin(REPOSITORY, 11, 1)
+                raised = None
+            except ValueError as error:
+                raised = error
+            return api.call_args_list, output.read(), raised
+
+    def test_begin_publishes_the_check_before_binding_the_pr(self):
+        calls, outputs, raised = self.begin_with([{"number": 7}], [pull()])
+        self.assertIsNone(raised)
+        created = calls[1]
+        self.assertEqual(created.args[:2], (f"repos/{REPOSITORY}/check-runs", "POST"))
+        self.assertTrue(created.args[2]["external_id"].startswith("premerge-pending:"))
+        self.assertEqual(calls[-1].args[2], {"external_id": check.external_id(3, pull(), source())})
+        self.assertTrue(outputs.startswith("check-id=900\n"))
+        self.assertIn("run-plans=true", outputs)
+
+    def test_begin_reports_binding_failures_on_the_pr(self):
+        closed = {**pull(), "state": "closed"}
+        calls, outputs, raised = self.begin_with([{"number": 7}], [closed])
+        self.assertRegex(str(raised), "found 0")
+        final = calls[-1]
+        self.assertEqual(final.args[:2], (f"repos/{REPOSITORY}/check-runs/900", "PATCH"))
+        self.assertEqual(final.args[2]["conclusion"], "failure")
+        self.assertIn("found 0", final.args[2]["output"]["summary"])
+        self.assertEqual(outputs, "check-id=900\n")
+
+    def test_fail_never_reports_success_or_overwrites_a_result(self):
+        with patch.dict(os.environ, RUN_ENV), patch.object(check, "api", return_value={}) as api:
+            check.fail(REPOSITORY, head=HEAD)
+        body = api.call_args.args[2]
+        self.assertEqual((body["head_sha"], body["conclusion"], body["details_url"]), (HEAD, "failure", RUN_URL))
+        with patch.dict(os.environ, RUN_ENV), self.assertRaisesRegex(ValueError, "head"):
+            check.fail(REPOSITORY, head="main")
+        for status, writes in [("in_progress", 1), ("completed", 0)]:
+            existing = {"name": check.CHECK_NAME, "status": status}
+            with self.subTest(status=status), patch.dict(os.environ, RUN_ENV), \
+                    patch.object(check, "api", side_effect=[existing, {}]) as api:
+                check.fail(REPOSITORY, check_id=900)
+            self.assertEqual(len(api.call_args_list) - 1, writes)
+            if writes:
+                self.assertEqual(api.call_args.args[2]["conclusion"], "failure")
+        with patch.dict(os.environ, RUN_ENV), \
+                patch.object(check, "api", return_value={"name": "Other", "status": "in_progress"}), \
+                self.assertRaisesRegex(ValueError, "does not belong"):
+            check.fail(REPOSITORY, check_id=900)
 
 
 if __name__ == "__main__":

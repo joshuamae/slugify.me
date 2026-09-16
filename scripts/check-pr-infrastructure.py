@@ -13,7 +13,9 @@ import math
 import os
 from pathlib import Path
 import re
+import secrets
 import subprocess
+import sys
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -22,18 +24,18 @@ import urllib.request
 ROOT = Path(__file__).resolve().parent.parent
 MAX_TEMPLATE_BYTES = 51200
 MAX_JSON_BYTES = 1024 * 1024
+MAX_TARGETS = 10
+MAX_ERROR_CHARACTERS = 4000
 SHA = re.compile(r"[a-f0-9]{40}")
 REPOSITORY = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+STACK_NAME = re.compile(r"[A-Za-z][A-Za-z0-9-]{0,127}")
+TEMPLATE_PATH = re.compile(r"infra/[A-Za-z0-9][A-Za-z0-9_-]{0,63}\.yaml")
 KIND = "pull-request-infrastructure-preflight"
-RESOURCE_TYPES = {
-    "AWS::CertificateManager::Certificate", "AWS::CloudFront::Distribution",
-    "AWS::CloudFront::Function", "AWS::CloudFront::OriginAccessControl",
-    "AWS::CloudFront::ResponseHeadersPolicy", "AWS::CloudWatch::Alarm",
-    "AWS::IAM::OIDCProvider", "AWS::IAM::Role", "AWS::KMS::Key",
-    "AWS::Route53::HostedZone", "AWS::Route53::RecordSet",
-    "AWS::Route53::RecordSetGroup", "AWS::S3::Bucket", "AWS::S3::BucketPolicy",
-    "AWS::SNS::Subscription", "AWS::SNS::Topic", "AWS::SNS::TopicPolicy",
-}
+# Temporary change sets use a prefix the execution role cannot run.
+CHANGE_SET_PREFIX = "premerge"
+# Standard AWS types are planned; namespaces that run code or expand templates are not.
+RESOURCE_TYPE = re.compile(r"AWS::([A-Za-z0-9]+)::[A-Za-z0-9]+")
+BLOCKED_NAMESPACES = {"CloudFormation", "Lambda", "Serverless"}
 SECTIONS = {"AWSTemplateFormatVersion", "Description", "Metadata", "Parameters",
             "Mappings", "Conditions", "Rules", "Resources", "Outputs"}
 
@@ -61,14 +63,36 @@ def decode_json(data):
 
 
 def trusted_config():
-    """Use stack names and template paths from the trusted checkout only."""
+    """Return the stack targets currently deployed from main."""
     return {environment: deployment.deployment_config(environment)
             for environment in ("staging", "production")}
 
 
-def template_paths():
-    """Return the fixed paths the trusted deployment configuration permits."""
-    return sorted({item["template"] for items in trusted_config().values() for item in items})
+def candidate_config(data):
+    """Accept PR deployment targets only as bounded stack names and infra/ template paths."""
+    config = decode_json(data)
+    if not isinstance(config, dict) or set(config) != {"staging", "production"}:
+        raise ValueError("infra/deployments.json must define only staging and production targets")
+    for environment, items in config.items():
+        if not isinstance(items, list) or not 1 <= len(items) <= MAX_TARGETS:
+            raise ValueError(f"{environment} requires 1 to {MAX_TARGETS} deployment targets")
+        stacks = set()
+        for item in items:
+            if (not isinstance(item, dict) or set(item) != {"stack", "template"}
+                    or not isinstance(item["stack"], str) or not STACK_NAME.fullmatch(item["stack"])
+                    or not isinstance(item["template"], str)
+                    or not TEMPLATE_PATH.fullmatch(item["template"])):
+                raise ValueError(f"Invalid {environment} deployment target; "
+                                 "use a stack name and a template directly inside infra/ ending in .yaml")
+            if item["stack"] in stacks:
+                raise ValueError(f"Duplicate {environment} stack: {item['stack']}")
+            stacks.add(item["stack"])
+    return config
+
+
+def template_paths(config):
+    """Return each distinct template path named by a validated deployment config."""
+    return sorted({item["template"] for items in config.values() for item in items})
 
 
 def read_file(directory, relative, limit=MAX_TEMPLATE_BYTES):
@@ -104,7 +128,7 @@ def github(path):
         with urllib.request.build_opener(NoRedirects).open(request, timeout=30) as response:
             return decode_json(response.read(MAX_JSON_BYTES + 1))
     except urllib.error.HTTPError as error:
-        raise ValueError(f"GitHub API request failed with HTTP {error.code}") from None
+        raise ValueError(f"GitHub API request failed with HTTP {error.code} for {path.split('?', 1)[0]}") from None
 
 
 def validate_context(context):
@@ -118,8 +142,22 @@ def validate_context(context):
         raise ValueError("Invalid PR provenance")
 
 
+def download(source_repository, path, head):
+    """Download one exact-revision file through the contents API."""
+    response = github(f"/repos/{source_repository}/contents/{path}?ref={head}")
+    if (not isinstance(response, dict) or response.get("type") != "file"
+            or response.get("path") != path or response.get("encoding") != "base64"
+            or type(response.get("size")) is not int
+            or not 0 <= response["size"] <= MAX_TEMPLATE_BYTES):
+        raise ValueError(f"GitHub returned an unsupported or oversized candidate file: {path}")
+    content = base64.b64decode("".join(response.get("content", "").split()), validate=True)
+    if len(content) != response["size"] or len(content) > MAX_TEMPLATE_BYTES:
+        raise ValueError(f"Candidate content size does not match GitHub metadata: {path}")
+    return content
+
+
 def fetch(repository, pr, head, base, directory):
-    """Download only allowlisted files after checking the current PR identity."""
+    """Download the PR's deployment targets and only the templates they name."""
     context = {"kind": KIND, "version": 1, "repository": repository, "pr": pr,
                "head": head, "base": base}
     validate_context(context)
@@ -134,20 +172,10 @@ def fetch(repository, pr, head, base, directory):
     if not REPOSITORY.fullmatch(source_repository):
         raise ValueError("PR source repository is unavailable")
     # Forks are valid data sources only when identified by this exact PR response.
-    contents = {}
-    for path in ["infra/deployments.json", *template_paths()]:
-        response = github(f"/repos/{source_repository}/contents/{path}?ref={head}")
-        if (not isinstance(response, dict) or response.get("type") != "file"
-                or response.get("path") != path or response.get("encoding") != "base64"
-                or type(response.get("size")) is not int
-                or not 0 <= response["size"] <= MAX_TEMPLATE_BYTES):
-            raise ValueError("GitHub returned an unsupported candidate file")
-        content = base64.b64decode("".join(response.get("content", "").split()), validate=True)
-        if len(content) != response["size"] or len(content) > MAX_TEMPLATE_BYTES:
-            raise ValueError("Candidate content size does not match GitHub metadata")
-        contents[path] = content
-    if decode_json(contents["infra/deployments.json"]) != trusted_config():
-        raise ValueError("PR deployment targets differ from the trusted configuration")
+    contents = {"infra/deployments.json": download(source_repository, "infra/deployments.json", head)}
+    config = candidate_config(contents["infra/deployments.json"])
+    for path in template_paths(config):
+        contents[path] = download(source_repository, path, head)
     directory.mkdir(parents=True, exist_ok=False)
     for path, content in contents.items():
         target = directory / path
@@ -157,19 +185,35 @@ def fetch(repository, pr, head, base, directory):
     (directory / "context.json").write_text(json.dumps(context, indent=2) + "\n")
 
 
+def candidate_targets(directory):
+    """Parse the downloaded deployment targets after their digest has been checked."""
+    return candidate_config(read_file(directory, "infra/deployments.json"))
+
+
 def load_context(directory):
-    """Verify every downloaded file and the fixed target list before each stage."""
+    """Verify every downloaded file against the targets it was fetched for."""
     context = decode_json(read_file(directory, "context.json"))
     validate_context(context)
-    expected = {"infra/deployments.json", *template_paths()}
-    if not isinstance(context.get("files"), dict) or set(context["files"]) != expected:
+    files = context.get("files")
+    if (not isinstance(files, dict) or "infra/deployments.json" not in files
+            or deployment.digest(read_file(directory, "infra/deployments.json")) != files["infra/deployments.json"]):
+        raise ValueError("Candidate deployment targets changed after download")
+    expected = {"infra/deployments.json", *template_paths(candidate_targets(directory))}
+    if set(files) != expected:
         raise ValueError("Candidate file allowlist changed")
     for path in expected:
-        if deployment.digest(read_file(directory, path)) != context["files"][path]:
+        if deployment.digest(read_file(directory, path)) != files[path]:
             raise ValueError("Candidate content changed after download")
-    if decode_json(read_file(directory, "infra/deployments.json")) != trusted_config():
-        raise ValueError("PR deployment targets differ from the trusted configuration")
     return context
+
+
+def check_resource_type(name, resource_type):
+    """Plan standard AWS resources; reject types that run code, expand, or come from modules."""
+    match = RESOURCE_TYPE.fullmatch(resource_type) if isinstance(resource_type, str) else None
+    if not match or match.group(1) in BLOCKED_NAMESPACES:
+        raise ValueError(f"{name} uses resource type {str(resource_type)[:100]!r}, which pre-merge planning "
+                         "does not accept. Custom, module, third-party, CloudFormation, Lambda and "
+                         "Serverless types need separate administrator review.")
 
 
 def validate_template_data(template):
@@ -203,10 +247,11 @@ def validate_template_data(template):
     if not isinstance(resources, dict) or not resources or len(resources) > 500:
         raise ValueError("Template requires a bounded Resources mapping")
     for name, resource in resources.items():
-        if (not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", name)
-                or not isinstance(resource, dict) or resource.get("Type") not in RESOURCE_TYPES
-                or not isinstance(resource.get("Properties", {}), dict)):
-            raise ValueError("Unsupported resource type or shape; review trusted preflight policy")
+        if not re.fullmatch(r"[A-Za-z][A-Za-z0-9]*", name) or not isinstance(resource, dict):
+            raise ValueError("Resource names must be alphanumeric and each resource must be a mapping")
+        check_resource_type(name, resource.get("Type"))
+        if not isinstance(resource.get("Properties", {}), dict):
+            raise ValueError(f"{name} Properties must be a mapping")
     return template
 
 
@@ -254,8 +299,29 @@ def parse_template(raw):
 
 
 def prepared_path(path):
-    """Derive output paths from trusted filenames, never candidate metadata."""
+    """Derive output paths from validated infra/ template paths only."""
     return "prepared/" + str(Path(path).with_suffix(".json"))
+
+
+def print_untrusted(text):
+    """Print candidate-derived text without letting it issue workflow commands."""
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        print(text)
+        return
+    token = secrets.token_hex(16)
+    print(f"::stop-commands::{token}")
+    print(text)
+    print(f"::{token}::", flush=True)
+
+
+def run_validator(command, name):
+    """Run a template validator and keep its findings in the raised error."""
+    result = subprocess.run(command, capture_output=True, text=True)
+    output = (result.stdout + result.stderr).strip()
+    if output:
+        print_untrusted(output)
+    if result.returncode:
+        raise ValueError(f"{name} reported problems in the proposed templates:\n{output[-MAX_ERROR_CHARACTERS:]}")
 
 
 def prepare(directory):
@@ -265,20 +331,25 @@ def prepare(directory):
                                           "GH_TOKEN", "GITHUB_TOKEN")):
         raise ValueError("Prepare must run without cloud or GitHub credentials")
     context = load_context(directory)
+    paths = template_paths(candidate_targets(directory))
     prepared = {"context": context, "templates": {}}
-    for path in template_paths():
-        content = json.dumps(parse_template(read_file(directory, path)),
-                             separators=(",", ":"), allow_nan=False).encode()
+    for path in paths:
+        try:
+            parsed = parse_template(read_file(directory, path))
+        except Exception as error:
+            raise ValueError(f"{path}: {error}") from None
+        content = json.dumps(parsed, separators=(",", ":"), allow_nan=False).encode()
         if len(content) > MAX_TEMPLATE_BYTES:
-            raise ValueError("Normalized template exceeds CloudFormation's inline limit")
+            raise ValueError(f"{path}: normalized template exceeds CloudFormation's inline limit")
         output = directory / prepared_path(path)
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(content)
         prepared["templates"][path] = deployment.digest(content)
-    files = [str(directory / prepared_path(path)) for path in template_paths()]
-    subprocess.run(["cfn-lint", "--regions", "us-east-1", "--template", *files], check=True)
-    subprocess.run(["cfn-guard", "validate", "--rules", str(ROOT / "infra/monitoring.guard"),
-                    "--data", str(directory / prepared_path("infra/monitoring.yaml"))], check=True)
+    run_validator(["cfn-lint", "--regions", "us-east-1", "--template",
+                   *[str(directory / prepared_path(path)) for path in paths]], "cfn-lint")
+    if "infra/monitoring.yaml" in paths:
+        run_validator(["cfn-guard", "validate", "--rules", str(ROOT / "infra/monitoring.guard"),
+                       "--data", str(directory / prepared_path("infra/monitoring.yaml"))], "cfn-guard")
     (directory / "prepared.json").write_text(json.dumps(prepared, indent=2) + "\n")
 
 
@@ -287,7 +358,7 @@ def load_prepared(directory):
     context = load_context(directory)
     prepared = decode_json(read_file(directory, "prepared.json"))
     if (prepared.get("context") != context or not isinstance(prepared.get("templates"), dict)
-            or set(prepared["templates"]) != set(template_paths())):
+            or set(prepared["templates"]) != set(template_paths(candidate_targets(directory)))):
         raise ValueError("Prepared templates do not match the downloaded PR")
     for path, fingerprint in prepared["templates"].items():
         content = read_file(directory, prepared_path(path))
@@ -295,6 +366,23 @@ def load_prepared(directory):
             raise ValueError("Prepared template changed after validation")
         validate_template_data(decode_json(content))
     return prepared
+
+
+def existing_stack(item, environment):
+    """Read a target stack, explaining what a new stack needs before it can be planned."""
+    try:
+        return deployment.checked_stack(item["stack"])
+    except RuntimeError as error:
+        if item in trusted_config()[environment]:
+            raise
+        raise RuntimeError(f"{item['stack']} is a new {environment} target in this PR and could not be read. "
+                           "Create the stack and add it to the planning role scope before merging. "
+                           f"AWS said: {error}") from None
+
+
+def remove_change_set(stack_id, name):
+    """Delete this preflight's change set by stack and name, never by a returned ID."""
+    deployment.aws("cloudformation", "delete-change-set", stack_name=stack_id, change_set_name=name)
 
 
 def plan(directory, environment, run):
@@ -305,8 +393,8 @@ def plan(directory, environment, run):
     context = prepared["context"]
     result = {"kind": KIND, "context": context, "environment": environment, "run": run,
               "region": os.environ["AWS_REGION"], "stacks": []}
-    for index, item in enumerate(trusted_config()[environment]):
-        stack = deployment.checked_stack(item["stack"])
+    for index, item in enumerate(candidate_targets(directory)[environment]):
+        stack = existing_stack(item, environment)
         probe = {"stack_name": stack["StackId"]}
         if stack.get("ChangeSetId"):
             probe["change_set_name"] = stack["ChangeSetId"]
@@ -316,17 +404,17 @@ def plan(directory, environment, run):
         # otherwise produce spurious IAM and distribution changes in AWS.
         template = directory / item["template"]
         schema = deployment.aws("cloudformation", "validate-template", template_body="file://" + str(template))
-        name = f"github-{environment}-pr-{context['pr']}-{run}-{index}"
+        name = f"{CHANGE_SET_PREFIX}-{environment}-{context['pr']}-{run}-{index}"
         created = deployment.aws("cloudformation", "create-change-set", stack_name=stack["StackId"],
                                  change_set_name=name, change_set_type="UPDATE",
                                  template_body="file://" + str(template), capabilities=["CAPABILITY_NAMED_IAM"],
                                  parameters=deployment.previous_parameters(schema.get("Parameters", []),
                                                                            stack.get("Parameters", [])),
                                  description=f"PR {context['pr']}; head {context['head']}; base {context['base']}; preflight only")
-        change_set_id = created["Id"]
-        if not change_set_id.endswith("/" + name) and f":changeSet/{name}/" not in change_set_id:
-            raise ValueError("AWS returned a change set outside this preflight's namespace")
         try:
+            change_set_id = created.get("Id", "")
+            if f":changeSet/{name}/" not in change_set_id:
+                raise ValueError("AWS returned a change set outside this preflight's namespace")
             change_set = deployment.wait_for(
                 lambda: deployment.aws("cloudformation", "describe-change-set", change_set_name=change_set_id),
                 lambda value: value["Status"] in {"CREATE_COMPLETE", "FAILED"}, timeout=600)
@@ -336,22 +424,24 @@ def plan(directory, environment, run):
                 reason in change_set.get("StatusReason", "") for reason in deployment.NO_CHANGES))
             findings = []
             if not no_op:
-                events = deployment.aws("cloudformation", "describe-events",
-                                        stack_name=stack["StackId"], change_set_name=change_set_id)
-                findings = [event for event in events.get("OperationEvents", [])
-                            if event.get("EventType") == "VALIDATION_ERROR"]
-                if any(event.get("ValidationFailureMode") == "FAIL" for event in findings):
-                    raise ValueError("CloudFormation validation findings require review before deployment")
-                if change_set["Status"] != "CREATE_COMPLETE" or change_set["ExecutionStatus"] != "AVAILABLE":
-                    raise ValueError("CloudFormation could not prepare the candidate change set")
-            changes = deployment.inspect_changes(change_set.get("Changes", []))
+                findings = deployment.validation_findings(stack["StackId"], change_set_id)
+                deployment.require_available(change_set)
+            try:
+                changes = deployment.inspect_changes(change_set.get("Changes", []))
+            except ValueError as error:
+                raise ValueError(f"{item['stack']}: {error}") from None
             result["stacks"].append({**item, "noOp": no_op, "changes": changes,
                                      "warningCount": len(findings),
                                      "sourceSha256": context["files"][item["template"]],
                                      "preparedSha256": prepared["templates"][item["template"]]})
-        finally:
-            # Only this exact ARN was created above; deployment plans are never read.
-            deployment.aws("cloudformation", "delete-change-set", change_set_name=change_set_id)
+        except BaseException:
+            try:
+                remove_change_set(stack["StackId"], name)
+            except Exception as cleanup:
+                # Keep the planning error as the reported failure.
+                print(f"Could not delete temporary change set {name}: {cleanup}", file=sys.stderr)
+            raise
+        remove_change_set(stack["StackId"], name)
     return result
 
 
@@ -368,6 +458,26 @@ def report(result):
         lines.append(f"| {stack['stack']} | {outcome} | {stack['warningCount']} | `{stack['sourceSha256']}` |")
     lines.extend(["", "This check does not execute changes or prove every execution-role write permission.", ""])
     return "\n".join(lines)
+
+
+def error_text(error):
+    """Bound an error message for summaries and annotations."""
+    message = str(error) or type(error).__name__
+    return message[:MAX_ERROR_CHARACTERS]
+
+
+def failure_report(environment, error):
+    """Show the failure reason in the job summary as inert text."""
+    return "\n".join([f"## AWS pre-merge: {environment}", "",
+                      "The proposed infrastructure did not pass AWS planning. "
+                      "Temporary change sets were deleted when AWS allowed it.", "",
+                      "```text", error_text(error).replace("`", "'"), "```", ""])
+
+
+def annotation(title, error):
+    """Encode an error as one workflow-command line so the report job can read it."""
+    message = error_text(error).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+    return f"::error title={title}::{message}"
 
 
 def main():
@@ -388,14 +498,27 @@ def main():
     planner.add_argument("--run", required=True)
     planner.add_argument("--report", type=Path, required=True)
     args = parser.parse_args()
-    if args.action == "fetch":
-        fetch(args.repository, args.pr, args.head, args.base, args.directory)
-    elif args.action == "prepare":
-        prepare(args.directory)
-    else:
-        summary = report(plan(args.directory.resolve(), args.environment, args.run))
-        args.report.write_text(summary)
-        print(summary)
+    title = f"AWS pre-merge {args.action}" + (f" ({args.environment})" if args.action == "plan" else "")
+    try:
+        if args.action == "fetch":
+            fetch(args.repository, args.pr, args.head, args.base, args.directory)
+        elif args.action == "prepare":
+            prepare(args.directory)
+        else:
+            summary = report(plan(args.directory.resolve(), args.environment, args.run))
+            with args.report.open("a") as stream:
+                stream.write(summary)
+            print(summary)
+    except (Exception, KeyboardInterrupt) as error:
+        if isinstance(error, KeyboardInterrupt):
+            error = RuntimeError("Planning was interrupted, usually by the step timeout")
+        if args.action == "plan":
+            with args.report.open("a") as stream:
+                stream.write(failure_report(args.environment, error))
+        print_untrusted(f"{title} failed:\n{error_text(error)}")
+        if os.environ.get("GITHUB_ACTIONS") == "true":
+            print(annotation(title, error), flush=True)
+        raise SystemExit(1) from None
 
 
 if __name__ == "__main__":
