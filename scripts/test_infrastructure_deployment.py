@@ -2,6 +2,7 @@
 
 import copy
 import importlib.util
+import io
 import os
 from pathlib import Path
 import unittest
@@ -97,6 +98,50 @@ class InfrastructureDeploymentTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "changed after planning"):
                 deployment.apply(self.saved_plan(), "staging", "a" * 40, "1-1")
             api.assert_not_called()
+
+    def test_rejects_plans_whose_stack_list_differs(self):
+        """Reject approval covering a different set of stacks."""
+        with patch.dict(os.environ, {"AWS_REGION": "us-east-1"}):
+            saved = self.saved_plan()
+            saved["stacks"] = []
+            with self.assertRaisesRegex(ValueError, "Plan stack list differs"):
+                deployment.validate_plan(saved, "staging", "a" * 40, "1-1")
+
+    def test_rejects_changes_that_differ_from_the_plan(self):
+        """Never execute live changes that the reviewer did not approve."""
+        response = {"StackId": "stack-id", "Status": "CREATE_COMPLETE",
+                    "ExecutionStatus": "AVAILABLE", "Changes": [change("Add")]}
+        with patch.dict(os.environ, {"AWS_REGION": "us-east-1"}), \
+                patch.object(deployment, "checked_stack", return_value=stack()), \
+                patch.object(deployment, "aws", return_value=response) as api:
+            with self.assertRaisesRegex(ValueError, "differ from the reviewed plan"):
+                deployment.apply(self.saved_plan(), "staging", "a" * 40, "1-1")
+            self.assertEqual([call.args[1] for call in api.call_args_list], ["describe-change-set"])
+
+    def test_validation_blocks_failures_but_reports_and_allows_warnings(self):
+        """A warning may accompany a usable change set; a FAIL finding stops it."""
+        response = {"Status": "CREATE_COMPLETE", "ExecutionStatus": "AVAILABLE",
+                    "Changes": [change()]}
+        for modes in [[], ["WARN"], ["FAIL"], ["WARN", "FAIL"]]:
+            events = [{"EventType": "VALIDATION_ERROR", "ValidationFailureMode": mode,
+                       "ValidationStatusReason": f"{mode} finding"} for mode in modes]
+            events.append({"EventType": "RESOURCE_STATUS", "ValidationFailureMode": "FAIL"})
+            with self.subTest(modes=modes), \
+                    patch.dict(os.environ, {"AWS_REGION": "us-east-1"}), \
+                    patch.object(deployment, "checked_stack", return_value=stack()), \
+                    patch.object(deployment, "wait_for", return_value=response), \
+                    patch.object(deployment, "aws", side_effect=[
+                        {}, {"Id": "plan-id"}, {"OperationEvents": events}]), \
+                    patch("sys.stdout", new_callable=io.StringIO) as output:
+                if "FAIL" in modes:
+                    with self.assertRaisesRegex(ValueError, "validation findings"):
+                        deployment.plan("staging", "a" * 40, "1-1")
+                else:
+                    saved = deployment.plan("staging", "a" * 40, "1-1")
+                    self.assertFalse(saved["stacks"][0]["noOp"])
+                    self.assertEqual(saved["stacks"][0]["changeSet"], "plan-id")
+                for mode in modes:
+                    self.assertIn(f"{mode} finding", output.getvalue())
 
     def test_no_op_does_not_execute(self):
         """Treat only CloudFormation's explicit no-change failure as a no-op."""

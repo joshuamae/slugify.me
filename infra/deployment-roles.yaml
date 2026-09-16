@@ -31,6 +31,21 @@ Parameters:
         Type: CommaDelimitedList
         AllowedPattern: '^arn:[a-z-]+:[a-z0-9-]+:[a-z0-9-]*:[0-9]*:[^*?]+$'
         Description: Exact project resource ARNs; exclude these bootstrap roles and every unrelated resource
+    StagingAuthSecretArn:
+        Type: String
+        Default: ''
+        AllowedPattern: '^$|^arn:[a-z-]+:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:[^*?]+$'
+        Description: Exact staging authentication secret ARN; leave empty for production
+Rules:
+    RequireStagingAuthSecret:
+        RuleCondition: !Equals [!Ref Environment, staging]
+        Assertions:
+            - Assert: !Not [!Equals [!Ref StagingAuthSecretArn, '']]
+              AssertDescription: Staging requires its authentication secret ARN
+Conditions:
+    HasStagingAuthSecret: !And
+        - !Equals [!Ref Environment, staging]
+        - !Not [!Equals [!Ref StagingAuthSecretArn, '']]
 Resources:
     Planner:
         Type: AWS::IAM::Role
@@ -84,8 +99,10 @@ Resources:
                     - Require production approval through its existing GitHub environment
                     - Restrict access to existing resources and stack ARNs
                     - Keep application uploads in the separate publisher role
+                    - Keep execution credentials valid through sequential stack updates and verification
+                    - Allow secret reads only for the staging authentication secret in staging
         Properties:
-            MaxSessionDuration: 3600
+            MaxSessionDuration: 10800
             AssumeRolePolicyDocument:
                 Version: '2012-10-17'
                 Statement:
@@ -169,7 +186,6 @@ Resources:
                                 - iam:ListOpenIDConnectProviderTags
                                 - iam:TagOpenIDConnectProvider
                                 - iam:UntagOpenIDConnectProvider
-                                - secretsmanager:GetSecretValue
                                 - kms:DescribeKey
                                 - kms:GetKeyPolicy
                                 - kms:GetKeyRotationStatus
@@ -205,6 +221,12 @@ Resources:
                                 - acm:RemoveTagsFromCertificate
                                 - acm:UpdateCertificateOptions
                             Resource: !Ref ResourceArns
+                          - !If
+                            - HasStagingAuthSecret
+                            - Effect: Allow
+                              Action: secretsmanager:GetSecretValue
+                              Resource: !Ref StagingAuthSecretArn
+                            - !Ref AWS::NoValue
                           - Effect: Allow
                             Action: route53:GetChange
                             Resource: !Sub 'arn:${AWS::Partition}:route53:::change/*'

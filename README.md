@@ -983,6 +983,14 @@ before enabling this workflow. Infrastructure and website deployment use
 separate AWS roles. Run the same AWS linters locally with
 `sh scripts/check-infrastructure.sh`; Docker provides the pinned tools.
 
+The publishing job allows up to three hours, with matching infrastructure
+execution credentials. If the infrastructure roles already exist, follow
+[Update existing infrastructure roles](docs/infrastructure-delivery.md#update-existing-infrastructure-roles)
+before running the updated workflow. Staging secret access is limited to its
+authentication secret. Production verification requires all six monitoring
+alarms to notify the monitoring stack's SNS topic for both alarm and recovery
+events.
+
 The run follows this sequence:
 
 1. **Validate infrastructure** checks the CloudFormation templates, Guard rules and regression cases, and Python tests without AWS credentials; **Check and package** then runs `npm ci`, `npm run check`, and `npm run build`

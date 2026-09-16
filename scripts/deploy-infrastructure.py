@@ -138,11 +138,11 @@ def plan(environment, commit, run):
         events = aws("cloudformation", "describe-events", change_set_name=created["Id"])
         findings = [event for event in events.get("OperationEvents", [])
                     if event.get("EventType") == "VALIDATION_ERROR"]
-        if findings:
-            for finding in findings:
-                print(json.dumps({key: finding.get(key) for key in
-                      ("ValidationName", "ValidationFailureMode", "LogicalResourceId",
-                       "ValidationPath", "ValidationStatusReason")}))
+        for finding in findings:
+            print(json.dumps({key: finding.get(key) for key in
+                  ("ValidationName", "ValidationFailureMode", "LogicalResourceId",
+                   "ValidationPath", "ValidationStatusReason")}))
+        if any(finding.get("ValidationFailureMode") == "FAIL" for finding in findings):
             raise ValueError("CloudFormation validation findings require review before deployment")
         no_op = (change_set["Status"] == "FAILED" and
                  any(reason in change_set.get("StatusReason", "") for reason in NO_CHANGES))
