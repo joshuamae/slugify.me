@@ -55,6 +55,7 @@ Resources:
                 must:
                     - Trust only the exact repository and matching plan environment
                     - Do not allow execution, role passing, or direct resource changes
+                    - Delete only temporary pre-merge change sets
         Properties:
             AssumeRolePolicyDocument:
                 Version: '2012-10-17'
@@ -90,6 +91,15 @@ Resources:
                                         - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/github-${Environment}-*/*'
                                 'Null':
                                     cloudformation:RoleArn: 'true'
+                          - Sid: CleanupPreMergeChangeSets
+                            Effect: Allow
+                            Action: cloudformation:DeleteChangeSet
+                            Resource: !Ref StackArns
+                            Condition:
+                                StringLike:
+                                    cloudformation:ChangeSetName:
+                                        - !Sub 'github-${Environment}-pr-*'
+                                        - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/github-${Environment}-pr-*/*'
     Executor:
         Type: AWS::IAM::Role
         Metadata:
@@ -234,9 +244,11 @@ Resources:
         Type: AWS::IAM::Policy
         Metadata:
             com.aws.cloudformation.Context:
-                why: Both phases must inspect the same stack revisions and change sets
+                why: Both phases inspect reviewed stacks; region-limited event reads avoid the observed resource-scoped DescribeEvents denial
                 must:
-                    - Read only the configured existing stacks and pipeline change-set events
+                    - Keep stack inspection scoped to the configured existing stacks
+                    - Isolate the account-wide event-read exception to DescribeEvents in this region
+                    - Never extend the event-read exception to mutation actions
         Properties:
             PolicyName: InspectExistingStacks
             Roles: [!Ref Planner, !Ref Executor]
@@ -247,13 +259,16 @@ Resources:
                       Action:
                           - cloudformation:DescribeStacks
                           - cloudformation:DescribeChangeSet
-                          - cloudformation:DescribeEvents
                           - cloudformation:ListStackResources
                           - cloudformation:GetTemplate
                       Resource: !Ref StackArns
-                    - Effect: Allow
+                    - Sid: ReadDeploymentEvents
+                      Effect: Allow
                       Action: cloudformation:DescribeEvents
-                      Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/github-${Environment}-*/*'
+                      Resource: '*'
+                      Condition:
+                          StringEquals:
+                              aws:RequestedRegion: !Ref AWS::Region
 Outputs:
     PlanRoleArn:
         Value: !GetAtt Planner.Arn

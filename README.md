@@ -53,13 +53,15 @@ or discuss a proposed feature. Keep changes focused and run `npm run check`
 before submitting a pull request against `main`.
 
 See the [development guide](docs/development.md) for project structure,
-conversion rules and verification steps.
+conversion rules and verification steps. See the
+[required checks before merge](docs/infrastructure-delivery.md#check-a-pull-request-before-merge)
+for AWS planning verification and its initial rollout.
 
 ## Documentation
 
 - [Develop and test the app](docs/development.md)
 - [Set up AWS hosting and recover releases](docs/aws-hosting.md)
-- [Deploy infrastructure and website changes](docs/infrastructure-delivery.md)
+- [Set up deployment roles and publish changes](docs/infrastructure-delivery.md)
 - [Monitor hosting, filter alert emails and review costs](docs/aws-operations.md)
 - [Rehearse recovery from a missing staging asset](docs/aws-staging-failure-exercise.md)
 - [Privacy policy](https://slugify.me/privacy-policy)
