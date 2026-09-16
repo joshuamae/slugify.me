@@ -276,20 +276,26 @@ export default function PrivacyPolicy() {
 					</CardHeader>
 					<CardContent className="flex flex-col gap-4">
 						<p>
-							I don't collect or send the text you enter to a
-							server. Your slugs are generated entirely in your
-							browser, and the code is open source so you can
-							check it yourself.
+							Your text and generated slugs stay in your browser.
+							The app does not upload or save them, and its code
+							is open source.
 						</p>
 						<p>
-							The site is hosted on Netlify, whose Observability
-							feature records your IP address and user-agent
-							details, including information about your browser
-							and device. Netlify does not give users the option
-							to turn that off.
+							The site runs on Amazon Web Services (AWS). Amazon
+							S3 stores the website files, and Amazon CloudFront
+							delivers them. To serve pages, AWS processes your IP
+							address and normal web request details, such as the
+							requested URL and browser headers.
 						</p>
 						<p>
-							I haven't added any ads or tracking to this project.
+							CloudFront and S3 visitor access logs are disabled.
+							Amazon CloudWatch monitors aggregate traffic and
+							errors. AWS may retain separate service and security
+							records.
+						</p>
+						<p>
+							I haven't added any ads or tracking analytics to
+							this project.
 						</p>
 					</CardContent>
 				</Card>
