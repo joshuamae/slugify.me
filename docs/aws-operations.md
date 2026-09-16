@@ -154,12 +154,22 @@ Before testing origin access, complete an invalidation for the test path or use
 a never-requested object path. Confirm the actual deployed cache policy: local
 managed-policy changes do not update CloudFront until deployed.
 
-For #66, agree on a reversible staging-only fault, recovery steps and stop
-conditions before injection. Capture metrics and alarms before, during and after
-the failure; keep production requests as a control. Allow metric publication
-delay and the two-of-three evaluation window. Record whether the request minimum
-was reached; do not label an absence of alarms a successful detection. Link the
-incident report here after the exercise. The notification-only test is separate.
+Follow [Rehearse recovery from a missing staging asset](aws-staging-failure-exercise.md)
+for the agreed fault, recovery procedure, and stop conditions. Capture metrics
+and alarms before, during and after the failure; keep production requests as a
+control. Allow metric publication delay and the two-of-three evaluation window.
+Record whether the request minimum was reached; do not label an absence of
+alarms a successful detection. The [2026-09-16 incident report](aws-incident-2026-09-16.md)
+records the execution evidence for #66. The notification-only test is separate.
+
+The staging release verifier intentionally requests every checked URL without
+credentials and with incorrect credentials after its successful request. Those
+expected `401` responses can push aggregate 4xx above the 50% threshold during a
+healthy deployment. Before declaring an incident, correlate the alarm interval
+with workflow output and request the affected page and required asset using
+valid credentials. Preserve these security checks and record this source of
+alarm noise when reviewing thresholds. An existing ALARM transition must not be
+attributed to a later exercise.
 
 Example evidence command, with an explicit UTC interval:
 
@@ -207,8 +217,10 @@ The monitoring stack deployed successfully. The owner confirmed its SNS
 subscription and receipt of the test alarm. CloudWatch recorded successful
 ALARM publication at 13:41:01 UTC and recovery publication at 13:41:24 UTC;
 all six alarms subsequently reached OK. This establishes notification delivery,
-not detection of a real hosting failure. Monitoring evidence for #66 remains
-outstanding.
+not detection of a real hosting failure. See the separate
+[failure exercise report](aws-incident-2026-09-16.md) for the actual failure,
+recovery, and monitoring evidence; the earlier delivery test is not reused as
+proof of incident detection.
 
 ## Monthly budget and estimate
 
