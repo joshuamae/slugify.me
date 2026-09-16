@@ -1,0 +1,239 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+    Bootstrap separate GitHub planning and execution roles for existing website
+    stacks. Deploy once per environment with administrator credentials. This
+    template is validated by CI but is never applied by the roles it creates.
+Metadata:
+    AWSToolsMetrics:
+        AWSAgentToolkit: aws-cloudformation@2
+    com.aws.cloudformation.Context:
+        ref: docs/infrastructure-delivery.md
+        must:
+            - Keep planning unable to execute or directly modify resources
+            - Scope execution to the supplied existing stacks and resource ARNs
+            - Never grant these roles permission to change their own bootstrap stack or policies
+Parameters:
+    Environment:
+        Type: String
+        AllowedValues: [staging, production]
+    GitHubOidcSubjectPrefix:
+        Type: String
+        AllowedPattern: '^repo:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|[A-Za-z0-9_.-]+@[0-9]+/[A-Za-z0-9_.-]+@[0-9]+)$'
+        Description: Exact repository subject prefix from GitHub, including immutable IDs when enabled
+    OidcProviderArn:
+        Type: String
+        AllowedPattern: '^arn:[a-z-]+:iam::[0-9]{12}:oidc-provider/token\.actions\.githubusercontent\.com$'
+    StackArns:
+        Type: CommaDelimitedList
+        AllowedPattern: '^arn:[a-z-]+:cloudformation:us-east-1:[0-9]{12}:stack/[A-Za-z][A-Za-z0-9-]*/[A-Za-z0-9-]+$'
+        Description: Exact existing stack ARNs from infra/deployments.json for this environment
+    ResourceArns:
+        Type: CommaDelimitedList
+        AllowedPattern: '^arn:[a-z-]+:[a-z0-9-]+:[a-z0-9-]*:[0-9]*:[^*?]+$'
+        Description: Exact project resource ARNs; exclude these bootstrap roles and every unrelated resource
+Resources:
+    Planner:
+        Type: AWS::IAM::Role
+        Metadata:
+            com.aws.cloudformation.Context:
+                why: Prepare change sets before the environment approval
+                must:
+                    - Trust only the exact repository and matching plan environment
+                    - Do not allow execution, role passing, or direct resource changes
+        Properties:
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                    - Effect: Allow
+                      Principal:
+                          Federated: !Ref OidcProviderArn
+                      Action: sts:AssumeRoleWithWebIdentity
+                      Condition:
+                          StringEquals:
+                              token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                              token.actions.githubusercontent.com:sub: !Sub '${GitHubOidcSubjectPrefix}:environment:${Environment}-plan'
+            Tags:
+                - Key: Project
+                  Value: static-site
+                - Key: Environment
+                  Value: !Ref Environment
+            Policies:
+                - PolicyName: PrepareExistingStacks
+                  PolicyDocument:
+                      Version: '2012-10-17'
+                      Statement:
+                          - Effect: Allow
+                            Action: cloudformation:ValidateTemplate
+                            Resource: '*'
+                          - Effect: Allow
+                            Action: cloudformation:CreateChangeSet
+                            Resource: !Ref StackArns
+                            Condition:
+                                StringLike:
+                                    cloudformation:ChangeSetName:
+                                        - !Sub 'github-${Environment}-*'
+                                        - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/github-${Environment}-*/*'
+                                'Null':
+                                    cloudformation:RoleArn: 'true'
+    Executor:
+        Type: AWS::IAM::Role
+        Metadata:
+            com.aws.cloudformation.Context:
+                why: Execute inspected change sets after GitHub environment protection passes
+                must:
+                    - Require production approval through its existing GitHub environment
+                    - Restrict access to existing resources and stack ARNs
+                    - Keep application uploads in the separate publisher role
+        Properties:
+            MaxSessionDuration: 3600
+            AssumeRolePolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                    - Effect: Allow
+                      Principal:
+                          Federated: !Ref OidcProviderArn
+                      Action: sts:AssumeRoleWithWebIdentity
+                      Condition:
+                          StringEquals:
+                              token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                              token.actions.githubusercontent.com:sub: !Sub '${GitHubOidcSubjectPrefix}:environment:${Environment}'
+            Tags:
+                - Key: Project
+                  Value: static-site
+                - Key: Environment
+                  Value: !Ref Environment
+            Policies:
+                - PolicyName: ExecuteReviewedChanges
+                  PolicyDocument:
+                      Version: '2012-10-17'
+                      Statement:
+                          - Effect: Allow
+                            Action:
+                                - cloudformation:ExecuteChangeSet
+                                - cloudformation:DeleteChangeSet
+                            Resource: !Ref StackArns
+                            Condition:
+                                StringLike:
+                                    cloudformation:ChangeSetName:
+                                        - !Sub 'github-${Environment}-*'
+                                        - !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/github-${Environment}-*/*'
+                          - Effect: Allow
+                            Action:
+                                - cloudfront:GetDistribution
+                                - cloudfront:GetDistributionConfig
+                                - cloudfront:UpdateDistribution
+                                - cloudfront:DescribeFunction
+                                - cloudfront:GetFunction
+                                - cloudfront:UpdateFunction
+                                - cloudfront:PublishFunction
+                                - cloudfront:GetOriginAccessControl
+                                - cloudfront:UpdateOriginAccessControl
+                                - cloudfront:GetResponseHeadersPolicy
+                                - cloudfront:UpdateResponseHeadersPolicy
+                                - cloudfront:ListTagsForResource
+                                - cloudfront:TagResource
+                                - cloudfront:UntagResource
+                                - s3:ListBucket
+                                - s3:GetAccelerateConfiguration
+                                - s3:GetAnalyticsConfiguration
+                                - s3:GetBucketCORS
+                                - s3:GetBucketLogging
+                                - s3:GetBucketNotification
+                                - s3:GetBucketObjectLockConfiguration
+                                - s3:GetBucketOwnershipControls
+                                - s3:GetBucketPolicy
+                                - s3:GetBucketPublicAccessBlock
+                                - s3:GetBucketTagging
+                                - s3:GetBucketVersioning
+                                - s3:GetBucketWebsite
+                                - s3:GetEncryptionConfiguration
+                                - s3:GetIntelligentTieringConfiguration
+                                - s3:GetInventoryConfiguration
+                                - s3:GetLifecycleConfiguration
+                                - s3:GetMetricsConfiguration
+                                - s3:GetReplicationConfiguration
+                                - s3:PutBucketPolicy
+                                - s3:PutBucketOwnershipControls
+                                - s3:PutBucketPublicAccessBlock
+                                - s3:PutBucketTagging
+                                - s3:PutBucketVersioning
+                                - s3:PutEncryptionConfiguration
+                                - s3:PutLifecycleConfiguration
+                                - iam:GetRole
+                                - iam:GetRolePolicy
+                                - iam:ListRolePolicies
+                                - iam:ListAttachedRolePolicies
+                                - iam:TagRole
+                                - iam:UntagRole
+                                - iam:GetOpenIDConnectProvider
+                                - iam:ListOpenIDConnectProviderTags
+                                - iam:TagOpenIDConnectProvider
+                                - iam:UntagOpenIDConnectProvider
+                                - secretsmanager:GetSecretValue
+                                - kms:DescribeKey
+                                - kms:GetKeyPolicy
+                                - kms:GetKeyRotationStatus
+                                - kms:ListResourceTags
+                                - kms:PutKeyPolicy
+                                - kms:EnableKeyRotation
+                                - kms:UpdateKeyDescription
+                                - kms:TagResource
+                                - kms:UntagResource
+                                - sns:GetTopicAttributes
+                                - sns:GetDataProtectionPolicy
+                                - sns:GetSubscriptionAttributes
+                                - sns:ListSubscriptionsByTopic
+                                - sns:ListTagsForResource
+                                - sns:SetTopicAttributes
+                                - sns:SetSubscriptionAttributes
+                                - sns:TagResource
+                                - sns:UntagResource
+                                - cloudwatch:DescribeAlarms
+                                - cloudwatch:PutMetricAlarm
+                                - cloudwatch:ListTagsForResource
+                                - cloudwatch:TagResource
+                                - cloudwatch:UntagResource
+                                - route53:GetHostedZone
+                                - route53:ListResourceRecordSets
+                                - route53:ChangeResourceRecordSets
+                                - route53:ListTagsForResource
+                                - route53:ChangeTagsForResource
+                                - route53:UpdateHostedZoneComment
+                                - acm:DescribeCertificate
+                                - acm:ListTagsForCertificate
+                                - acm:AddTagsToCertificate
+                                - acm:RemoveTagsFromCertificate
+                                - acm:UpdateCertificateOptions
+                            Resource: !Ref ResourceArns
+                          - Effect: Allow
+                            Action: route53:GetChange
+                            Resource: !Sub 'arn:${AWS::Partition}:route53:::change/*'
+    StackInspection:
+        Type: AWS::IAM::Policy
+        Metadata:
+            com.aws.cloudformation.Context:
+                why: Both phases must inspect the same stack revisions and change sets
+                must:
+                    - Read only the configured existing stacks and pipeline change-set events
+        Properties:
+            PolicyName: InspectExistingStacks
+            Roles: [!Ref Planner, !Ref Executor]
+            PolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                    - Effect: Allow
+                      Action:
+                          - cloudformation:DescribeStacks
+                          - cloudformation:DescribeChangeSet
+                          - cloudformation:DescribeEvents
+                          - cloudformation:ListStackResources
+                          - cloudformation:GetTemplate
+                      Resource: !Ref StackArns
+                    - Effect: Allow
+                      Action: cloudformation:DescribeEvents
+                      Resource: !Sub 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/github-${Environment}-*/*'
+Outputs:
+    PlanRoleArn:
+        Value: !GetAtt Planner.Arn
+    ExecutionRoleArn:
+        Value: !GetAtt Executor.Arn

@@ -1,0 +1,13 @@
+{
+	"staging": [
+		{ "stack": "static-site-staging", "template": "infra/site.yaml" }
+	],
+	"production": [
+		{ "stack": "static-site-domain", "template": "infra/domain.yaml" },
+		{ "stack": "static-site-production", "template": "infra/site.yaml" },
+		{
+			"stack": "static-site-monitoring",
+			"template": "infra/monitoring.yaml"
+		}
+	]
+}

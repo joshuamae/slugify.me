@@ -978,13 +978,18 @@ merged pull requests, or a manual run on `main`. Pull requests and other branche
 do not deploy. `.github/workflows/publish-site.yaml` is a reusable workflow called
 by the staging and production jobs; it has no standalone manual trigger.
 
+Complete the [infrastructure automation setup](docs/infrastructure-delivery.md)
+before enabling this workflow. Infrastructure and website deployment use
+separate AWS roles. Run the same AWS linters locally with
+`sh scripts/check-infrastructure.sh`; Docker provides the pinned tools.
+
 The run follows this sequence:
 
-1. **Check and package** runs `npm ci`, `npm run check`, and `npm run build` without AWS credentials
+1. **Validate infrastructure** checks the CloudFormation templates, Guard rules and regression cases, and Python tests without AWS credentials; **Check and package** then runs `npm ci`, `npm run check`, and `npm run build`
 2. The build packages `build/client/`, creates `SHA256SUMS` and `manifest.json`, and saves all three files as one immutable GitHub artifact retained for seven days
-3. **Publish and verify staging** downloads that artifact by its numeric ID, verifies the manifest against the build job's SHA-256 output and the archive/files against the manifest, then publishes and verifies staging
-4. **Publish and verify production** becomes eligible only after the build and staging jobs succeed, and waits for the production environment's required reviewer
-5. After approval, production downloads the same artifact ID, verifies the same SHA-256, and publishes and verifies its contents without rebuilding
+3. **Plan staging infrastructure** prepares and inspects change sets from the merged commit; **Publish and verify staging** applies them and verifies the current release before publishing and verifying the new artifact
+4. **Plan production infrastructure** runs only after staging succeeds and records the domain, hosting, and monitoring change sets in the workflow summary; **Publish and verify production** then waits for the production environment's required reviewer
+5. After approval, production verifies the saved plan, applies infrastructure, verifies the existing release, and publishes the same checked artifact without rebuilding
 
 Each release ID combines the first 12 characters of the commit SHA, the GitHub
 run ID, and the build attempt number. Each environment archives the package under
