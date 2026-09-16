@@ -90,6 +90,7 @@ The example is a style reference, not a requirement to introduce a particular co
 - Preserve unrelated user changes and keep each change narrowly scoped.
 - Do not rewrite history, reset the worktree, or create a commit unless the user explicitly asks.
 - Before handing off, summarize changed files and verification results.
+- Never add `Co-Authored-By` trailers or other AI attribution to commit messages or pull request descriptions
 
 ## GitHub CLI and command formatting
 
