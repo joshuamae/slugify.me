@@ -473,3 +473,337 @@
   expectations:
       rules:
           executor_cannot_run_pre_merge_change_sets: FAIL
+
+- name: Planner may prepare deployment and pre-merge change sets
+  input:
+      Resources:
+          Planner:
+              Properties:
+                  Policies:
+                      - PolicyName: PrepareExistingStacks
+                        PolicyDocument:
+                            Statement:
+                                - &planner_validate
+                                  Effect: Allow
+                                  Action: cloudformation:ValidateTemplate
+                                  Resource: '*'
+                                - &planner_create
+                                  Effect: Allow
+                                  Action: cloudformation:CreateChangeSet
+                                  Resource: { Ref: StackArns }
+                                  Condition:
+                                      StringLike:
+                                          cloudformation:ChangeSetName:
+                                              - Fn::Sub: 'github-${Environment}-*'
+                                              - Fn::Sub: 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/github-${Environment}-*/*'
+                                              - Fn::Sub: 'premerge-${Environment}-*'
+                                              - Fn::Sub: 'arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:changeSet/premerge-${Environment}-*/*'
+                                      'Null':
+                                          cloudformation:RoleArn: 'true'
+                                - &planner_cleanup
+                                  Sid: CleanupPreMergeChangeSets
+                                  Effect: Allow
+                                  Action: cloudformation:DeleteChangeSet
+                                  Resource: { Ref: StackArns }
+                                  Condition: *pre_merge_names
+          StackInspection:
+              Type: AWS::IAM::Policy
+              Properties:
+                  Roles: [{ Ref: Planner }, { Ref: Executor }]
+                  PolicyDocument:
+                      Statement: [*stack_reads, *event_read]
+  expectations:
+      rules:
+          planner_cleanup_only_deletes_pre_merge_change_sets: PASS
+          executor_cannot_run_pre_merge_change_sets: FAIL
+
+- name: Planner cannot add execution through a statement with another Sid
+  input:
+      Resources:
+          Planner:
+              Properties:
+                  Policies:
+                      - PolicyName: PrepareExistingStacks
+                        PolicyDocument:
+                            Statement:
+                                - *planner_validate
+                                - *planner_create
+                                - *planner_cleanup
+                                - Sid: PrepareMore
+                                  Effect: Allow
+                                  Action: cloudformation:ExecuteChangeSet
+                                  Resource: { Ref: StackArns }
+  expectations:
+      rules:
+          planner_cleanup_only_deletes_pre_merge_change_sets: FAIL
+
+- name: Planner cannot delete deployment change sets through a second inline policy
+  input:
+      Resources:
+          Planner:
+              Properties:
+                  Policies:
+                      - PolicyName: PrepareExistingStacks
+                        PolicyDocument:
+                            Statement:
+                                [
+                                    *planner_validate,
+                                    *planner_create,
+                                    *planner_cleanup,
+                                ]
+                      - PolicyName: Extra
+                        PolicyDocument:
+                            Statement:
+                                - Effect: Allow
+                                  Action: [CloudFormation:DeleteChangeSet]
+                                  Resource: { Ref: StackArns }
+  expectations:
+      rules:
+          planner_cleanup_only_deletes_pre_merge_change_sets: FAIL
+
+- name: Planner cannot receive managed policies
+  input:
+      Resources:
+          Planner:
+              Properties:
+                  ManagedPolicyArns:
+                      ['arn:aws:iam::aws:policy/AdministratorAccess']
+                  Policies:
+                      - PolicyName: PrepareExistingStacks
+                        PolicyDocument:
+                            Statement:
+                                [
+                                    *planner_validate,
+                                    *planner_create,
+                                    *planner_cleanup,
+                                ]
+  expectations:
+      rules:
+          planner_cleanup_only_deletes_pre_merge_change_sets: FAIL
+
+- name: Planner cannot receive CloudFormation access from a managed policy resource
+  input:
+      Resources:
+          Planner:
+              Properties:
+                  Policies:
+                      - PolicyName: PrepareExistingStacks
+                        PolicyDocument:
+                            Statement:
+                                [
+                                    *planner_validate,
+                                    *planner_create,
+                                    *planner_cleanup,
+                                ]
+          ExtraAccess:
+              Type: AWS::IAM::ManagedPolicy
+              Properties:
+                  Roles: [{ Ref: Planner }]
+                  PolicyDocument:
+                      Statement:
+                          - Effect: Allow
+                            Action: 'cloudformation:*'
+                            Resource: '*'
+  expectations:
+      rules:
+          planner_cleanup_only_deletes_pre_merge_change_sets: FAIL
+
+- name: Planner cannot hide a statement behind a condition function
+  input:
+      Resources:
+          Planner:
+              Properties:
+                  Policies:
+                      - PolicyName: PrepareExistingStacks
+                        PolicyDocument:
+                            Statement:
+                                - *planner_validate
+                                - *planner_create
+                                - *planner_cleanup
+                                - Fn::If:
+                                      - IsStaging
+                                      - Effect: Allow
+                                        Action: cloudformation:ExecuteChangeSet
+                                        Resource: '*'
+                                      - Ref: AWS::NoValue
+  expectations:
+      rules:
+          planner_cleanup_only_deletes_pre_merge_change_sets: FAIL
+
+- name: Executor rejects differently cased pre-merge execution action
+  input:
+      Resources:
+          Executor:
+              Properties:
+                  Policies:
+                      - PolicyName: ExecuteReviewedChanges
+                        PolicyDocument:
+                            Statement:
+                                - *executor_change_sets
+                                - Effect: Allow
+                                  Action: CloudFormation:ExecuteChangeSet
+                                  Resource: { Ref: StackArns }
+                                  Condition: *pre_merge_names
+  expectations:
+      rules:
+          executor_cannot_run_pre_merge_change_sets: FAIL
+
+- name: Executor rejects differently cased actions in a list
+  input:
+      Resources:
+          Executor:
+              Properties:
+                  Policies:
+                      - PolicyName: ExecuteReviewedChanges
+                        PolicyDocument:
+                            Statement:
+                                - *executor_change_sets
+                                - Effect: Allow
+                                  Action:
+                                      [
+                                          s3:ListBucket,
+                                          CLOUDFORMATION:EXECUTECHANGESET,
+                                      ]
+                                  Resource: { Ref: StackArns }
+                                  Condition: *pre_merge_names
+  expectations:
+      rules:
+          executor_cannot_run_pre_merge_change_sets: FAIL
+
+- name: Executor rejects NotAction statements
+  input:
+      Resources:
+          Executor:
+              Properties:
+                  Policies:
+                      - PolicyName: ExecuteReviewedChanges
+                        PolicyDocument:
+                            Statement:
+                                - *executor_change_sets
+                                - Effect: Allow
+                                  NotAction: s3:DeleteBucket
+                                  Resource: { Ref: StackArns }
+  expectations:
+      rules:
+          executor_cannot_run_pre_merge_change_sets: FAIL
+
+- name: Executor cannot hide execution behind a condition function
+  input:
+      Resources:
+          Executor:
+              Properties:
+                  Policies:
+                      - PolicyName: ExecuteReviewedChanges
+                        PolicyDocument:
+                            Statement:
+                                - *executor_change_sets
+                                - Fn::If:
+                                      - HasStagingAuthSecret
+                                      - Effect: Allow
+                                        Action: cloudformation:ExecuteChangeSet
+                                        Resource: { Ref: StackArns }
+                                        Condition: *pre_merge_names
+                                      - Ref: AWS::NoValue
+  expectations:
+      rules:
+          executor_cannot_run_pre_merge_change_sets: FAIL
+
+- name: Executor cannot receive managed policies
+  input:
+      Resources:
+          Executor:
+              Properties:
+                  ManagedPolicyArns: [{ Ref: ExtraAccess }]
+                  Policies:
+                      - PolicyName: ExecuteReviewedChanges
+                        PolicyDocument:
+                            Statement: [*executor_change_sets]
+  expectations:
+      rules:
+          executor_cannot_run_pre_merge_change_sets: FAIL
+
+- name: Executor cannot receive execution from an attached policy resource
+  input:
+      Resources:
+          Executor:
+              Properties:
+                  Policies:
+                      - PolicyName: ExecuteReviewedChanges
+                        PolicyDocument:
+                            Statement: [*executor_change_sets]
+          ExtraAccess:
+              Type: AWS::IAM::Policy
+              Properties:
+                  Roles: [{ Ref: Executor }]
+                  PolicyDocument:
+                      Statement:
+                          - Effect: Allow
+                            Action: cloudformation:ExecuteChangeSet
+                            Resource: { Ref: StackArns }
+                            Condition: *pre_merge_names
+  expectations:
+      rules:
+          executor_cannot_run_pre_merge_change_sets: FAIL
+
+- name: Executor cannot receive execution from a role policy resource
+  input:
+      Resources:
+          Executor:
+              Properties:
+                  Policies:
+                      - PolicyName: ExecuteReviewedChanges
+                        PolicyDocument:
+                            Statement: [*executor_change_sets]
+          ExtraAccess:
+              Type: AWS::IAM::RolePolicy
+              Properties:
+                  RoleName: { Ref: Executor }
+                  PolicyDocument:
+                      Statement:
+                          - Effect: Allow
+                            Action: '*'
+                            Resource: '*'
+  expectations:
+      rules:
+          executor_cannot_run_pre_merge_change_sets: FAIL
+
+- name: Policy resources must use statement lists
+  input:
+      Resources:
+          Executor:
+              Properties:
+                  Policies:
+                      - PolicyName: ExecuteReviewedChanges
+                        PolicyDocument:
+                            Statement: [*executor_change_sets]
+          ExtraAccess:
+              Type: AWS::IAM::Policy
+              Properties:
+                  Roles: [{ Ref: Executor }]
+                  PolicyDocument:
+                      Statement:
+                          Effect: Allow
+                          Action: cloudformation:ExecuteChangeSet
+                          Resource: '*'
+  expectations:
+      rules:
+          executor_cannot_run_pre_merge_change_sets: FAIL
+
+- name: Shared stack inspection remains allowed for the executor
+  input:
+      Resources:
+          Executor:
+              Properties:
+                  Policies:
+                      - PolicyName: ExecuteReviewedChanges
+                        PolicyDocument:
+                            Statement: [*executor_change_sets]
+          StackInspection:
+              Type: AWS::IAM::Policy
+              Properties:
+                  Roles: [{ Ref: Planner }, { Ref: Executor }]
+                  PolicyDocument:
+                      Statement: [*stack_reads, *event_read]
+  expectations:
+      rules:
+          executor_cannot_run_pre_merge_change_sets: PASS
