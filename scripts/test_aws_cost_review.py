@@ -9,6 +9,7 @@ summarize = runpy.run_path(str(Path(__file__).with_name("review-aws-costs.py")))
 
 
 def response(*amounts):
+    """Build a SERVICE-grouped USD report with one period per supplied amount."""
     return {
         "GroupDefinitions": [{"Type": "DIMENSION", "Key": "SERVICE"}],
         "ResultsByTime": [
@@ -20,19 +21,24 @@ def response(*amounts):
 
 
 class CostReviewTests(unittest.TestCase):
+    """Check cost precision and reject reports that would misstate spending."""
+
     def test_sums_periods_without_float_rounding_and_preserves_adjustments(self):
+        """Retain fractional cents and negative adjustments across periods."""
         self.assertEqual(
             summarize(response("0.1", "0.2", "-0.05", "0.0000000001")),
             {"Example service": Decimal("0.2500000001")},
         )
 
     def test_rejects_incomplete_pagination(self):
+        """Reject a response that omits another page of billed services."""
         data = response("1")
         data["NextPageToken"] = "another-page"
         with self.assertRaises(ValueError):
             summarize(data)
 
     def test_rejects_wrong_grouping_and_mixed_currency(self):
+        """Reject reports that cannot be interpreted as service totals in USD."""
         data = response("1")
         data["GroupDefinitions"][0]["Key"] = "USAGE_TYPE"
         with self.assertRaises(ValueError):
@@ -43,6 +49,7 @@ class CostReviewTests(unittest.TestCase):
             summarize(data)
 
     def test_rejects_nonfinite_and_empty_reports(self):
+        """Reject undefined amounts and reports without any billing periods."""
         for data in [response("NaN"), response("Infinity"), response()]:
             with self.assertRaises(ValueError):
                 summarize(data)

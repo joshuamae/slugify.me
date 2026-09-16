@@ -63,6 +63,7 @@ def summarize_costs(data):
 
 
 def main():
+    """Print the planning baseline and optionally summarize a saved cost report."""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--costs", type=Path, help="Saved Cost Explorer JSON, grouped by SERVICE")
     args = parser.parse_args()

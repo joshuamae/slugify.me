@@ -178,7 +178,8 @@ budgets. Budget notifications do not automatically stop AWS charges.
 ### Monitor availability and review costs
 
 `infra/monitoring.yaml` defines CloudFront request and error alarms for staging
-and production, with encrypted email notifications. Deploy it separately in
+and production, with email notifications delivered through an SNS topic encrypted
+at rest. Deploy it separately in
 `us-east-1`. It uses default metrics and does not enable visitor access logs.
 
 See [Monitor AWS hosting and review monthly costs](docs/aws-operations.md) for

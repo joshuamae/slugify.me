@@ -16,23 +16,35 @@ rule keys_are_retained_and_rotated when %keys !empty {
 }
 
 rule cloudwatch_key_access_is_scoped when %keys !empty {
-    %keys.Properties.KeyPolicy.Statement[
-        Sid == 'AllowCloudWatchAlarmEncryption'
-    ] {
-        Principal.Service == 'cloudwatch.amazonaws.com'
-        Condition.StringEquals.'aws:SourceAccount' exists
-        Condition.ArnLike.'aws:SourceArn' exists
+    %keys {
+        let statements = Properties.KeyPolicy.Statement[
+            Sid == 'AllowCloudWatchAlarmEncryption'
+        ]
+        %statements !empty
+        %statements {
+            Effect == 'Allow'
+            Principal.Service == 'cloudwatch.amazonaws.com'
+            some Action[*] == 'kms:GenerateDataKey'
+            some Action[*] == 'kms:Decrypt'
+            Action[*] IN ['kms:GenerateDataKey', 'kms:Decrypt']
+            Condition.StringEquals.'aws:SourceAccount' exists
+            Condition.ArnLike.'aws:SourceArn' exists
+        }
     }
 }
 
 rule service_publishing_is_scoped when %policies !empty {
-    %policies.Properties.PolicyDocument.Statement[
-        Effect == 'Allow'
-    ] {
-        Principal.Service == 'cloudwatch.amazonaws.com'
-        Action == 'sns:Publish'
-        Condition.StringEquals.'aws:SourceAccount' exists
-        Condition.ArnLike.'aws:SourceArn' exists
+    %policies {
+        let statements = Properties.PolicyDocument.Statement[
+            Effect == 'Allow'
+        ]
+        %statements !empty
+        %statements {
+            Principal.Service == 'cloudwatch.amazonaws.com'
+            Action == 'sns:Publish'
+            Condition.StringEquals.'aws:SourceAccount' exists
+            Condition.ArnLike.'aws:SourceArn' exists
+        }
     }
 }
 

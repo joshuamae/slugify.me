@@ -31,6 +31,8 @@ The error alarms evaluate only periods with at least 20 requests. The 4xx/5xx
 metrics use `Average`; request volume uses `Sum`. CloudFront's five-minute
 average error rate is not a reconstructed request-weighted error count.
 Staging's higher 4xx threshold accommodates expected unauthorized visits.
+Error thresholds must be at least 0.01%; zero would treat low-traffic periods as
+breaching because the metric expression returns zero below the request minimum.
 These are initial operating thresholds, not a service-level guarantee; review
 them after the first week and after the staging failure exercise.
 
@@ -52,6 +54,7 @@ outputs. Keep the email address and account-specific parameter files out of Git.
     ```sh
     cfn-lint --regions us-east-1 --template infra/monitoring.yaml
     cfn-guard validate --rules infra/monitoring.guard --data infra/monitoring.yaml
+    cfn-guard test --rules-file infra/monitoring.guard --test-data infra/monitoring_tests.yaml
     aws cloudformation validate-template --region us-east-1 \
       --template-body file://infra/monitoring.yaml
     ```
