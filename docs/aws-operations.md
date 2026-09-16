@@ -146,7 +146,7 @@ key policy to make the test pass.
 2. Inspect Requests, 4xxErrorRate, and 5xxErrorRate over the same interval using `DistributionId` and `Region=Global`
 3. Reproduce the failure on a known page and an asset referenced by that page; use valid staging credentials through the existing protected verification procedure
 4. Compare response status, Content-Type, Cache-Control, Age, X-Cache, and body checksums with the release manifest
-5. Follow the [release recovery procedure](../README.md#deploy-staging-and-promote-to-production), then verify every route and asset and test real-time conversion in a browser
+5. Follow the [release recovery procedure](aws-hosting.md#deploy-staging-and-promote-to-production), then verify every route and asset and test real-time conversion in a browser
 
 A warm CloudFront cache can hide an S3 origin failure. A random query string is
 not a reliable bypass because the site's cache policies omit query strings.
