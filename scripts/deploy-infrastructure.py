@@ -135,7 +135,12 @@ def plan(environment, commit, run):
         change_set = wait_for(
             lambda: aws("cloudformation", "describe-change-set", change_set_name=created["Id"]),
             lambda value: value["Status"] in {"CREATE_COMPLETE", "FAILED"})
-        events = aws("cloudformation", "describe-events", change_set_name=created["Id"])
+        no_op = (change_set["Status"] == "FAILED" and
+                 any(reason in change_set.get("StatusReason", "") for reason in NO_CHANGES))
+        # An explicit no-change result has no deployment validation to inspect.
+        events = {} if no_op else aws(
+            "cloudformation", "describe-events", stack_name=stack["StackId"],
+            change_set_name=created["Id"])
         findings = [event for event in events.get("OperationEvents", [])
                     if event.get("EventType") == "VALIDATION_ERROR"]
         for finding in findings:
@@ -144,8 +149,6 @@ def plan(environment, commit, run):
                    "ValidationPath", "ValidationStatusReason")}))
         if any(finding.get("ValidationFailureMode") == "FAIL" for finding in findings):
             raise ValueError("CloudFormation validation findings require review before deployment")
-        no_op = (change_set["Status"] == "FAILED" and
-                 any(reason in change_set.get("StatusReason", "") for reason in NO_CHANGES))
         if not no_op and (change_set["Status"] != "CREATE_COMPLETE" or
                           change_set["ExecutionStatus"] != "AVAILABLE"):
             raise ValueError(change_set.get("StatusReason", "Change set is unavailable"))

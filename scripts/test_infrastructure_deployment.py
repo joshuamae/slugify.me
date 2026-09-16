@@ -131,7 +131,7 @@ class InfrastructureDeploymentTests(unittest.TestCase):
                     patch.object(deployment, "checked_stack", return_value=stack()), \
                     patch.object(deployment, "wait_for", return_value=response), \
                     patch.object(deployment, "aws", side_effect=[
-                        {}, {"Id": "plan-id"}, {"OperationEvents": events}]), \
+                        {}, {"Id": "plan-id"}, {"OperationEvents": events}]) as api, \
                     patch("sys.stdout", new_callable=io.StringIO) as output:
                 if "FAIL" in modes:
                     with self.assertRaisesRegex(ValueError, "validation findings"):
@@ -142,6 +142,40 @@ class InfrastructureDeploymentTests(unittest.TestCase):
                     self.assertEqual(saved["stacks"][0]["changeSet"], "plan-id")
                 for mode in modes:
                     self.assertIn(f"{mode} finding", output.getvalue())
+                api.assert_called_with("cloudformation", "describe-events",
+                                       stack_name="stack-id", change_set_name="plan-id")
+
+    def test_no_change_planning_skips_event_lookup(self):
+        """A confirmed empty change set produces a no-op plan without reading events."""
+        for reason in deployment.NO_CHANGES:
+            response = {"Status": "FAILED", "ExecutionStatus": "UNAVAILABLE",
+                        "StatusReason": reason}
+            with self.subTest(reason=reason), \
+                    patch.dict(os.environ, {"AWS_REGION": "us-east-1"}), \
+                    patch.object(deployment, "checked_stack", return_value=stack()), \
+                    patch.object(deployment, "wait_for", return_value=response), \
+                    patch.object(deployment, "aws", side_effect=[{}, {"Id": "plan-id"}]) as api:
+                saved = deployment.plan("staging", "a" * 40, "1-1")
+                self.assertTrue(saved["stacks"][0]["noOp"])
+                self.assertEqual(saved["stacks"][0]["changes"], [])
+                self.assertEqual(saved["stacks"][0]["changeSet"], "plan-id")
+                self.assertEqual([call.args[1] for call in api.call_args_list],
+                                 ["validate-template", "create-change-set"])
+
+    def test_other_planning_failures_still_require_event_inspection(self):
+        """Do not classify failed validation or denied event reads as no-change results."""
+        response = {"Status": "FAILED", "StatusReason": "Validation failed"}
+        for events in [{"OperationEvents": []}, RuntimeError("AccessDenied")]:
+            with self.subTest(events=events), \
+                    patch.dict(os.environ, {"AWS_REGION": "us-east-1"}), \
+                    patch.object(deployment, "checked_stack", return_value=stack()), \
+                    patch.object(deployment, "wait_for", return_value=response), \
+                    patch.object(deployment, "aws", side_effect=[{}, {"Id": "plan-id"}, events]) as api:
+                expected = RuntimeError if isinstance(events, Exception) else ValueError
+                with self.assertRaises(expected):
+                    deployment.plan("staging", "a" * 40, "1-1")
+                api.assert_called_with("cloudformation", "describe-events",
+                                       stack_name="stack-id", change_set_name="plan-id")
 
     def test_no_op_does_not_execute(self):
         """Treat only CloudFormation's explicit no-change failure as a no-op."""
