@@ -26,7 +26,8 @@ existing planning roles to create temporary change sets, inspect validation
 results and call `DescribeEvents`, including when AWS reports no infrastructure
 changes. It deletes its temporary change sets and never executes them.
 Temporary change sets use the `premerge-<environment>-` prefix, which the
-execution roles cannot run.
+execution roles cannot run. The pre-merge session policy also limits change-set
+creation and deletion to that prefix.
 
 When the check fails, open **AWS pre-merge** on the pull request. Its summary
 quotes each cfn-lint, Guard or CloudFormation error reported by the planning

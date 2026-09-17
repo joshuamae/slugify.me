@@ -76,7 +76,6 @@ class PullRequestInfrastructureTests(unittest.TestCase):
     def test_fetch_rejects_stale_or_wrong_pr_identity_before_downloading(self):
         """A trusted workflow must still bind downloads to the exact open PR."""
         changes = [lambda pr: pr["head"].update(sha="c" * 40),
-                   lambda pr: pr["base"].update(sha="c" * 40),
                    lambda pr: pr["base"].update(ref="other"),
                    lambda pr: pr["base"]["repo"].update(full_name="other/site"),
                    lambda pr: pr.update(state="closed"),
@@ -107,6 +106,16 @@ class PullRequestInfrastructureTests(unittest.TestCase):
         self.assertEqual([call.args[0] for call in api.call_args_list[1:]],
                          [f"/repos/contributor/site/contents/{path}?ref={HEAD}" for path in paths])
         self.assertEqual(preflight.load_context(self.directory)["head"], HEAD)
+
+    def test_fetch_accepts_main_advancing_after_the_check_started(self):
+        """The recorded base stays in the evidence; only the head decides what is planned."""
+        advanced = pull_request()
+        advanced["base"]["sha"] = "c" * 40
+        paths = ["infra/deployments.json", *preflight.template_paths(preflight.trusted_config())]
+        replies = [advanced, *[self.file_reply(path, (preflight.ROOT / path).read_bytes()) for path in paths]]
+        with patch.object(preflight, "github", side_effect=replies):
+            preflight.fetch("owner/site", 12, HEAD, BASE, self.directory)
+        self.assertEqual(preflight.load_context(self.directory)["base"], BASE)
 
     def test_fetch_plans_new_targets_named_by_the_pull_request(self):
         """A PR can add a stack and template without merging first."""
@@ -170,7 +179,7 @@ class PullRequestInfrastructureTests(unittest.TestCase):
             preflight.load_context(self.directory)
 
     def run_plan(self, no_op=True, event_error=False, wait_error=False, events=None, response=None,
-                 created=CHANGE_SET, error=None):
+                 created=CHANGE_SET, error=None, create_error=False):
         """Emulate AWS while recording every operation and submitted parameter."""
         self.bundle()
         response = response or {
@@ -183,13 +192,15 @@ class PullRequestInfrastructureTests(unittest.TestCase):
                 return {"Parameters": [{"ParameterKey": "AlertEmail"}]}
             if operation == "create-change-set":
                 self.assertEqual(options["change_set_name"], CHANGE_SET_NAME)
+                if create_error:
+                    raise RuntimeError("cloudformation create-change-set: Read timeout")
                 return {"Id": created}
             if operation == "describe-events" and options.get("change_set_name") == created:
                 if event_error:
                     raise RuntimeError("AccessDenied")
                 return {"OperationEvents": events or []}
             return {}
-        if event_error or wait_error:
+        if event_error or wait_error or create_error:
             error = error or RuntimeError
         with patch.dict(os.environ, {"AWS_REGION": "us-east-1"}), \
                 patch.object(preflight.deployment, "checked_stack", return_value=stack()), \
@@ -213,9 +224,10 @@ class PullRequestInfrastructureTests(unittest.TestCase):
     def test_no_op_still_probes_real_events_and_submits_original_yaml(self):
         """Normalization must not cause false IAM policy changes in CloudFormation."""
         result, calls = self.run_plan()
-        probe = calls[0]
-        self.assertEqual(probe.args, ("cloudformation", "describe-events"))
-        self.assertEqual(probe.kwargs, {"stack_name": STACK_ID, "change_set_name": OLD_CHANGE_SET})
+        probes = [call.kwargs for call in calls if call.args[1] == "describe-events"]
+        # Probe the change set this check created, never the stack's historical one.
+        self.assertEqual(probes, [{"stack_name": STACK_ID, "change_set_name": CHANGE_SET}])
+        self.assertNotIn(OLD_CHANGE_SET, str(calls))
         created = next(call for call in calls if call.args[1] == "create-change-set")
         self.assertEqual(created.kwargs["template_body"], "file://" + str(self.directory / "infra/site.yaml"))
         self.assertEqual(created.kwargs["parameters"], [{"ParameterKey": "AlertEmail", "UsePreviousValue": True}])
@@ -228,6 +240,28 @@ class PullRequestInfrastructureTests(unittest.TestCase):
     def test_permission_failure_cleans_up_without_execution(self):
         """A real DescribeEvents denial fails the check and removes its change set."""
         self.run_plan(no_op=False, event_error=True)
+
+    def test_no_op_permission_failure_cleans_up_without_execution(self):
+        """Plans without changes still make the event read that deployment depends on."""
+        self.run_plan(no_op=True, event_error=True)
+
+    def test_failed_create_call_still_deletes_the_named_change_set(self):
+        """AWS may accept a change set even when the CLI call reports a failure."""
+        self.run_plan(create_error=True)
+
+    def test_transforms_found_by_cloudformation_stop_before_change_set_creation(self):
+        """A parser difference cannot let a macro run during planning."""
+        self.bundle()
+        def api(service, operation, **options):
+            if operation == "validate-template":
+                return {"Parameters": [], "DeclaredTransforms": ["AWS::Include"]}
+            return {}
+        with patch.dict(os.environ, {"AWS_REGION": "us-east-1"}), \
+                patch.object(preflight.deployment, "checked_stack", return_value=stack()), \
+                patch.object(preflight.deployment, "aws", side_effect=api) as calls, \
+                self.assertRaisesRegex(ValueError, "reports transforms"):
+            preflight.plan(self.directory, "staging", "100-1")
+        self.assertEqual([call.args[1] for call in calls.call_args_list], ["validate-template"])
 
     def test_wait_failure_cleans_up_without_execution(self):
         """A failed or interrupted wait does not leave a normal temporary plan."""
@@ -357,6 +391,18 @@ class CandidateParsingTests(unittest.TestCase):
         for raw in cases:
             with self.subTest(raw=raw), self.assertRaises(ValueError):
                 preflight.parse_template(raw)
+
+    def test_unquoted_dates_stay_strings_like_cloudformation_reads_them(self):
+        raw = (b"AWSTemplateFormatVersion: 2010-09-09\n"
+               b"Resources: {Bucket: {Type: 'AWS::S3::Bucket', Properties: {Tags: [{Key: Created, Value: 2026-09-16}]}}}")
+        parsed = preflight.parse_template(raw)
+        self.assertEqual(parsed["AWSTemplateFormatVersion"], "2010-09-09")
+        self.assertEqual(parsed["Resources"]["Bucket"]["Properties"]["Tags"][0]["Value"], "2026-09-16")
+
+    def test_unsupported_values_name_their_location(self):
+        raw = b"Resources: {Bucket: {Type: 'AWS::S3::Bucket', Properties: {Data: !!binary aGVsbG8=}}}"
+        with self.assertRaisesRegex(ValueError, r"template\.Resources\.Bucket\.Properties\.Data"):
+            preflight.parse_template(raw)
 
     def test_accepts_standard_aws_resource_types_before_trusted_code_lists_them(self):
         for resource_type in ["AWS::Logs::LogGroup", "AWS::CloudFront::CachePolicy", "AWS::WAFv2::WebACL"]:

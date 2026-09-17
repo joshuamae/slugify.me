@@ -9,8 +9,10 @@ on:
 permissions:
   contents: read
 
+# Serialize reruns of one revision only. A branch-wide group lets a late run for an
+# older revision replace the pending run for the current head, leaving no check.
 concurrency:
-  group: aws-pre-merge-${{ github.event.workflow_run.head_repository.id }}-${{ github.event.workflow_run.head_branch }}
+  group: aws-pre-merge-${{ github.event.workflow_run.head_sha }}
   cancel-in-progress: false
 
 defaults:
@@ -108,8 +110,9 @@ jobs:
           aws-region: ${{ vars.AWS_REGION }}
           role-session-name: premerge-${{ matrix.environment }}-${{ github.run_id }}
           mask-aws-account-id: true
+          # The role also creates github- plans after merge; this session can only use the premerge- prefix.
           inline-session-policy: >-
-            {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["cloudformation:ValidateTemplate","cloudformation:DescribeStacks","cloudformation:DescribeChangeSet","cloudformation:DescribeEvents","cloudformation:CreateChangeSet","cloudformation:DeleteChangeSet"],"Resource":"*"}]}
+            {"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["cloudformation:ValidateTemplate","cloudformation:DescribeStacks","cloudformation:DescribeChangeSet","cloudformation:DescribeEvents"],"Resource":"*"},{"Effect":"Allow","Action":["cloudformation:CreateChangeSet","cloudformation:DeleteChangeSet"],"Resource":"*","Condition":{"StringLike":{"cloudformation:ChangeSetName":["premerge-${{ matrix.environment }}-*","arn:*:cloudformation:*:*:changeSet/premerge-${{ matrix.environment }}-*/*"]}}}]}
       - name: Inspect proposed changes and clean up without execution
         run: |
           timeout --signal=INT --kill-after=60s 20m python3 -B scripts/check-pr-infrastructure.py plan \

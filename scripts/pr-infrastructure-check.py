@@ -20,7 +20,11 @@ def api(path, method="GET", data=None):
     if data is not None:
         command.extend(["--input", "-"])
     result = subprocess.run(command, input=json.dumps(data) if data is not None else None,
-                            capture_output=True, text=True, check=True)
+                            capture_output=True, text=True)
+    if result.returncode:
+        # Keep GitHub's reason; the exit status alone does not explain the failure.
+        raise RuntimeError(f"GitHub API {method} {path.split('?', 1)[0]} failed: "
+                           f"{(result.stderr or result.stdout).strip()[:MAX_ERROR_CHARACTERS]}")
     return json.loads(result.stdout)
 
 
@@ -64,24 +68,21 @@ def source_run(repository, run_id, attempt):
     return run
 
 
-def matches(pr, run, repository):
-    """Only the still-open PR at this run's head can receive its result."""
-    return (pr["state"] == "open" and pr["head"]["sha"] == run["head_sha"]
-            and pr["base"]["ref"] == "main"
-            and pr["base"]["repo"]["full_name"] == repository
-            and pr["head"].get("repo") is not None
-            and pr["head"]["repo"]["id"] == run["head_repository"]["id"])
-
-
-def external_id(repository_id, pr, run):
-    return (f"premerge:{repository_id}:{pr['number']}:{run['id']}:"
-            f"{run['run_attempt']}:{pr['head']['sha']}:{pr['base']['sha']}")
-
-
 def targets_main(pr, run, repository):
     """Report whether a PR at this exact revision is one AWS pre-merge must gate."""
     return (pr["state"] == "open" and pr["head"]["sha"] == run["head_sha"]
             and pr["base"]["ref"] == "main" and pr["base"]["repo"]["full_name"] == repository)
+
+
+def matches(pr, run, repository):
+    """Only the still-open PR at this run's head, from the run's source repository, receives its result."""
+    return (targets_main(pr, run, repository) and pr["head"].get("repo") is not None
+            and pr["head"]["repo"]["id"] == run["head_repository"]["id"])
+
+
+def external_id(repository_id, pr_number, run_id, attempt, head, base):
+    """Name the exact check identity that finish and the rollout helper verify."""
+    return f"premerge:{repository_id}:{pr_number}:{run_id}:{attempt}:{head}:{base}"
 
 
 def begin(repository, run_id, attempt):
@@ -115,7 +116,8 @@ def begin(repository, run_id, attempt):
         if not SHA.fullmatch(pr["base"]["sha"]):
             raise ValueError("Invalid pull request base revision")
         api(f"repos/{repository}/check-runs/{check['id']}", "PATCH",
-            {"external_id": external_id(repo["id"], pr, run)})
+            {"external_id": external_id(repo["id"], pr["number"], run["id"], run["run_attempt"],
+                                        run["head_sha"], pr["base"]["sha"])})
     except Exception as error:
         complete(repository, check["id"], "failure", "AWS preflight could not start",
                  "The trusted workflow could not bind this check to the pull request revision.\n\n"
@@ -140,7 +142,7 @@ def plan_errors(repository):
                 message = str(item.get("message", ""))
                 if item.get("annotation_level") == "failure" and not EXIT_ANNOTATION.fullmatch(message):
                     messages.append(f"{job.get('name', 'plan')}: {message}")
-    except (subprocess.CalledProcessError, ValueError, KeyError, TypeError, AttributeError):
+    except (RuntimeError, ValueError, KeyError, TypeError, AttributeError):
         pass
     return messages
 
@@ -166,11 +168,13 @@ def finish(repository, run_id, attempt, check_id, pr_number, head, base, result)
     run = source_run(repository, run_id, attempt)
     pr = api(f"repos/{repository}/pulls/{pr_number}")
     check = api(f"repos/{repository}/check-runs/{check_id}")
-    expected = f"premerge:{repo['id']}:{pr_number}:{run_id}:{attempt}:{head}:{base}"
+    expected = external_id(repo["id"], pr_number, run_id, attempt, head, base)
     if (check["name"] != CHECK_NAME or check["head_sha"] != head
             or check["external_id"] != expected or run["head_sha"] != head):
         raise ValueError("Check provenance does not match this preflight")
-    fresh = matches(pr, run, repository) and pr["base"]["sha"] == base
+    # A base-only change keeps the result: main advancing starts no new PR run, and the
+    # check applies only to this head commit.
+    fresh = matches(pr, run, repository)
     conclusion = ("cancelled" if not fresh else
                   "success" if result == "success" and run["conclusion"] == "success" else "failure")
     if conclusion == "success":
@@ -211,7 +215,7 @@ def fail(repository, head=None, check_id=None):
             complete(repository, item["id"], "failure", title, summary)
         if pending:
             return
-    except (subprocess.CalledProcessError, ValueError, KeyError, TypeError, AttributeError):
+    except (RuntimeError, ValueError, KeyError, TypeError, AttributeError):
         pass  # The lookup is best effort; still report a failure below.
     api(f"repos/{repository}/check-runs", "POST", {
         "name": CHECK_NAME, "head_sha": head, "status": "completed", "conclusion": "failure",

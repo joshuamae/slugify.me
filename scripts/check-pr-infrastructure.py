@@ -162,12 +162,13 @@ def fetch(repository, pr, head, base, directory):
                "head": head, "base": base}
     validate_context(context)
     pull = github(f"/repos/{repository}/pulls/{pr}")
+    # The base SHA is recorded, not required: main can advance during planning without a
+    # new PR event, and the plan uses only head templates and live stacks.
     if (pull.get("number") != pr or pull.get("state") != "open"
             or pull.get("base", {}).get("ref") != "main"
-            or pull.get("base", {}).get("sha") != base
             or pull.get("head", {}).get("sha") != head
             or pull.get("base", {}).get("repo", {}).get("full_name", "").lower() != repository.lower()):
-        raise ValueError("PR head, base, state, or repository changed; run a fresh check")
+        raise ValueError("PR head, base branch, state, or repository changed; run a fresh check")
     source_repository = (pull.get("head", {}).get("repo") or {}).get("full_name", "")
     if not REPOSITORY.fullmatch(source_repository):
         raise ValueError("PR source repository is unavailable")
@@ -220,7 +221,7 @@ def validate_template_data(template):
     """Reject executable transforms, remote templates, and unsupported shapes."""
     count = 0
 
-    def walk(value, depth=0):
+    def walk(value, path, depth=0):
         nonlocal count
         count += 1
         if count > 20000 or depth > 50:
@@ -231,16 +232,16 @@ def validate_template_data(template):
                     raise ValueError("Template mapping keys must be strings")
                 if key in {"Transform", "Fn::Transform", "TemplateURL", "TemplateBody"}:
                     raise ValueError("Transforms and external template indirection are not allowed")
-                walk(child, depth + 1)
+                walk(child, f"{path}.{key}", depth + 1)
         elif isinstance(value, list):
-            for child in value:
-                walk(child, depth + 1)
+            for index, child in enumerate(value):
+                walk(child, f"{path}[{index}]", depth + 1)
         elif value is not None and type(value) not in {str, bool, int, float}:
-            raise ValueError("Unsupported template value")
+            raise ValueError(f"Unsupported template value at {path[:200]}")
         elif isinstance(value, float) and not math.isfinite(value):
-            raise ValueError("Non-finite template number")
+            raise ValueError(f"Non-finite template number at {path[:200]}")
 
-    walk(template)
+    walk(template, "template")
     if not isinstance(template, dict) or set(template) - SECTIONS:
         raise ValueError("Unsupported template sections")
     resources = template.get("Resources")
@@ -285,6 +286,8 @@ def parse_template(raw):
         return {tag if tag in {"Ref", "Condition"} else "Fn::" + tag: value}
 
     TemplateLoader.add_multi_constructor("!", intrinsic)
+    # CloudFormation reads unquoted dates such as Version: 2012-10-17 as strings.
+    TemplateLoader.add_constructor("tag:yaml.org,2002:timestamp", TemplateLoader.construct_yaml_str)
     depth = 0
     for count, event in enumerate(yaml.parse(raw)):
         if isinstance(event, yaml.AliasEvent):
@@ -403,23 +406,26 @@ def plan(directory, environment, run):
               "region": os.environ["AWS_REGION"], "stacks": []}
     for index, item in enumerate(candidate_targets(directory)[environment]):
         stack = existing_stack(item, environment)
-        probe = {"stack_name": stack["StackId"]}
-        if stack.get("ChangeSetId"):
-            probe["change_set_name"] = stack["ChangeSetId"]
-        # Always make a real request, including when the candidate will be a no-op.
-        deployment.aws("cloudformation", "describe-events", **probe)
         # Send the exact reviewed YAML. Normalized intrinsic representations can
         # otherwise produce spurious IAM and distribution changes in AWS.
         template = directory / item["template"]
         schema = deployment.aws("cloudformation", "validate-template", template_body="file://" + str(template))
+        # Offline checks read PyYAML's parse; CloudFormation's own parse must also find no
+        # macro, because change-set creation runs transforms before anything is executed.
+        if schema.get("DeclaredTransforms"):
+            raise ValueError(f"{item['template']}: CloudFormation reports transforms, "
+                             "which pre-merge planning does not accept")
         name = f"{CHANGE_SET_PREFIX}-{environment}-{context['pr']}-{run}-{index}"
-        created = deployment.aws("cloudformation", "create-change-set", stack_name=stack["StackId"],
-                                 change_set_name=name, change_set_type="UPDATE",
-                                 template_body="file://" + str(template), capabilities=["CAPABILITY_NAMED_IAM"],
-                                 parameters=deployment.previous_parameters(schema.get("Parameters", []),
-                                                                           stack.get("Parameters", [])),
-                                 description=f"PR {context['pr']}; head {context['head']}; base {context['base']}; preflight only")
+        parameters = deployment.previous_parameters(schema.get("Parameters", []), stack.get("Parameters", []))
+        # Start cleanup before creation: AWS can accept the change set even when the
+        # CLI call then fails or is interrupted by the step timeout.
         try:
+            created = deployment.aws(
+                "cloudformation", "create-change-set", stack_name=stack["StackId"],
+                change_set_name=name, change_set_type="UPDATE",
+                template_body="file://" + str(template), capabilities=["CAPABILITY_NAMED_IAM"],
+                parameters=parameters,
+                description=f"PR {context['pr']}; head {context['head']}; base {context['base']}; preflight only")
             change_set_id = created.get("Id", "")
             if f":changeSet/{name}/" not in change_set_id:
                 raise ValueError("AWS returned a change set outside this preflight's namespace")
@@ -431,7 +437,11 @@ def plan(directory, environment, run):
             no_op = (change_set["Status"] == "FAILED" and any(
                 reason in change_set.get("StatusReason", "") for reason in deployment.NO_CHANGES))
             findings = []
-            if not no_op:
+            if no_op:
+                # Still make the deployment's event read against this change set.
+                deployment.aws("cloudformation", "describe-events", stack_name=stack["StackId"],
+                               change_set_name=change_set_id)
+            else:
                 findings = deployment.validation_findings(stack["StackId"], change_set_id)
                 deployment.require_available(change_set)
             try:
