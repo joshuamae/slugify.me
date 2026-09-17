@@ -2,8 +2,7 @@
 
 Use this exercise to diagnose a missing JavaScript asset and restore the exact
 S3 object version. Run it only against staging. Keep production available as a
-read-only control. The [incident report](aws-incident-2026-09-16.md) records the
-execution separately from this reusable procedure.
+read-only control.
 
 ## Before you start
 

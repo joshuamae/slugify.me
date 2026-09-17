@@ -202,12 +202,11 @@ Expected result: the recipient receives only the labeled production error and
 recovery messages. SNS acceptance alone does not prove delivery, and absence
 from an inbox alone does not prove filtering. Use successful matching deliveries,
 the deployed filter and SNS metrics together. This remains separate from the
-controlled failure exercise in #66 and its CloudWatch action evidence.
+[controlled failure exercise](aws-staging-failure-exercise.md).
 
 The former staging `set-alarm-state` test now expects no email. It can check
 CloudWatch publication and negative filtering, but cannot demonstrate delivery
-to the inbox. Preserve the historical test evidence below as evidence of the
-configuration that was active then.
+to the inbox.
 
 If a matching test does not arrive, check confirmation, spam filtering, the
 exact alarm name and state fields, `MessageBody` scope and the 15-minute
@@ -237,8 +236,7 @@ for the agreed fault, recovery procedure, and stop conditions. Capture metrics
 and alarms before, during and after the failure; keep production requests as a
 control. Allow metric publication delay and the two-of-three evaluation window.
 Record whether the request minimum was reached; do not label an absence of
-alarms a successful detection. The [2026-09-16 incident report](aws-incident-2026-09-16.md)
-records the execution evidence for #66. The notification-only test is separate.
+alarms a successful detection. The notification-only test is separate.
 
 The staging release verifier intentionally requests every checked URL without
 credentials and with incorrect credentials after its successful request. Those
@@ -281,25 +279,12 @@ choice, with less request-level diagnostic detail. This is not a claim that AWS
 retains no service or security records. Review the decision if aggregated
 metrics and manifest checks cannot diagnose a real incident. Any later access
 logging change needs explicit fields, access controls, retention and a revised
-cost estimate and hosting disclosure. Complete public privacy-copy changes in
-#70 after the migration work.
+cost estimate and hosting disclosure.
 
 Sources: [CloudWatch retention](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/cloudwatch_concepts.html),
 [alarm history](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/AlarmThatSendsEmail.html),
 [CloudTrail event history](https://docs.aws.amazon.com/awscloudtrail/latest/userguide/view-cloudtrail-events.html),
 and [CloudFront logging costs](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/standard-logging.html).
-
-### Historical verification before email filtering on 2026-09-16
-
-Before the email filter was added, the monitoring stack deployed successfully.
-The owner confirmed its SNS subscription and receipt of the test alarm.
-CloudWatch recorded successful
-ALARM publication at 13:41:01 UTC and recovery publication at 13:41:24 UTC;
-all six alarms subsequently reached OK. This establishes notification delivery,
-not detection of a real hosting failure. See the separate
-[failure exercise report](aws-incident-2026-09-16.md) for the actual failure,
-recovery, and monitoring evidence; the earlier delivery test is not reused as
-proof of incident detection.
 
 ## Monthly budget and estimate
 
@@ -420,9 +405,6 @@ Inspect S3 with `list-object-versions`, not only `list-objects-v2`: overwritten
 files and retained versions still cost money. Use the existing release retention
 preview before cleanup. Never remove active/previous releases, clear pending
 release state, or delete cached assets just to reduce a small storage charge.
-
-See [the first cost review](aws-cost-review-2026-09-16.md) for the baseline and
-the initial corrective actions.
 
 The cost helper's focused tests run separately from the npm application checks:
 
