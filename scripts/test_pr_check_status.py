@@ -66,39 +66,57 @@ class PreMergeStatusTests(unittest.TestCase):
     def finish_response(self, pr=None, run=None, result="success", identity=None, errors=()):
         run = run or source()
         original = {"name": check.CHECK_NAME, "head_sha": HEAD,
-                    "external_id": identity or check.external_id(3, pull(), source())}
+                    "external_id": identity or check.external_id(3, 7, 11, 1, HEAD, BASE)}
         responses = [{"id": 3}, pr or pull(), original, {}]
         with patch.dict(os.environ, RUN_ENV), \
                 patch.object(check, "source_run", return_value=run), \
                 patch.object(check, "plan_errors", return_value=list(errors)), \
                 patch.object(check, "write_outputs") as outputs, \
                 patch.object(check, "api", side_effect=responses) as api:
+            self.exit_code = None
             try:
                 check.finish(REPOSITORY, 11, 1, 123, 7, HEAD, BASE, result)
-            except SystemExit:
-                pass
+            except SystemExit as exit:
+                self.exit_code = exit.code
             self.outputs = outputs.call_args_list
             return api.call_args
 
     def test_success_requires_both_environment_plans(self):
         result = self.finish_response()
         self.assertEqual(result.args[2]["conclusion"], "success")
+        self.assertIsNone(self.exit_code)
         for outcome in ["failure", "cancelled", "skipped"]:
             with self.subTest(outcome=outcome):
                 result = self.finish_response(result=outcome)
                 self.assertEqual(result.args[2]["conclusion"], "failure")
+                # The workflow run must fail too; the rollout helper trusts successful runs.
+                self.assertEqual(self.exit_code, 1)
 
     def test_failed_upstream_cannot_be_reported_as_success(self):
         result = self.finish_response(run={**source(), "conclusion": "failure"})
         self.assertEqual(result.args[2]["conclusion"], "failure")
 
-    def test_changed_head_or_base_cancels_the_old_check(self):
-        for side in ["head", "base"]:
-            pr = pull()
-            pr[side]["sha"] = "c" * 40
-            result = self.finish_response(pr=pr)
-            self.assertEqual(result.args[0], f"repos/{REPOSITORY}/check-runs/123")
-            self.assertEqual(result.args[2]["conclusion"], "cancelled")
+    def test_changed_head_cancels_the_old_check(self):
+        pr = pull()
+        pr["head"]["sha"] = "c" * 40
+        result = self.finish_response(pr=pr)
+        self.assertEqual(result.args[0], f"repos/{REPOSITORY}/check-runs/123")
+        self.assertEqual(result.args[2]["conclusion"], "cancelled")
+        self.assertEqual(self.exit_code, 1)
+
+    def test_advanced_base_keeps_the_result_for_the_unchanged_head(self):
+        """Main moving starts no new PR run, so cancelling would leave the head without a result."""
+        pr = pull()
+        pr["base"]["sha"] = "c" * 40
+        result = self.finish_response(pr=pr)
+        self.assertEqual(result.args[2]["conclusion"], "success")
+        self.assertIsNone(self.exit_code)
+
+    def test_api_failures_keep_githubs_reason(self):
+        failed = subprocess.CompletedProcess(["gh"], 1, stdout="", stderr="gh: Resource not accessible by integration (HTTP 403)")
+        with patch.object(check.subprocess, "run", return_value=failed), \
+                self.assertRaisesRegex(RuntimeError, r"POST repos/example/site/check-runs failed: .*HTTP 403"):
+            check.api(f"repos/{REPOSITORY}/check-runs?per_page=1", "POST", {})
 
     def test_wrong_check_identity_fails_before_any_success_write(self):
         with self.assertRaisesRegex(ValueError, "provenance"):
@@ -126,7 +144,7 @@ class PreMergeStatusTests(unittest.TestCase):
         with patch.dict(os.environ, RUN_ENV), patch.object(check, "api", side_effect=[jobs, annotations]) as api:
             self.assertEqual(check.plan_errors(REPOSITORY), ["plan (staging): cfn-lint reported problems"])
         self.assertEqual(api.call_args_list[0].args[0], f"repos/{REPOSITORY}/actions/runs/500/attempts/1/jobs?per_page=100")
-        failure = subprocess.CalledProcessError(1, ["gh"])
+        failure = RuntimeError("GitHub API GET repos/example/site/actions/runs/500/attempts/1/jobs failed")
         with patch.dict(os.environ, RUN_ENV), patch.object(check, "api", side_effect=failure):
             self.assertEqual(check.plan_errors(REPOSITORY), [])
 
@@ -149,7 +167,7 @@ class PreMergeStatusTests(unittest.TestCase):
         created = calls[3]
         self.assertEqual(created.args[:2], (f"repos/{REPOSITORY}/check-runs", "POST"))
         self.assertTrue(created.args[2]["external_id"].startswith("premerge-pending:"))
-        self.assertEqual(calls[-1].args[2], {"external_id": check.external_id(3, pull(), source())})
+        self.assertEqual(calls[-1].args[2], {"external_id": check.external_id(3, 7, 11, 1, HEAD, BASE)})
         self.assertTrue(outputs.startswith("check-id=900\n"))
         self.assertIn("run-plans=true", outputs)
 
@@ -208,7 +226,7 @@ class PreMergeStatusTests(unittest.TestCase):
         finish.assert_not_called()
 
     def test_fail_by_head_still_reports_when_the_lookup_fails(self):
-        responses = [subprocess.CalledProcessError(1, ["gh"]), {}]
+        responses = [RuntimeError("GitHub API GET check-runs failed"), {}]
         with patch.dict(os.environ, RUN_ENV), patch.object(check, "api", side_effect=responses) as api:
             check.fail(REPOSITORY, head=HEAD)
         self.assertEqual(api.call_args.args[:2], (f"repos/{REPOSITORY}/check-runs", "POST"))

@@ -140,10 +140,11 @@ def observed_aws_check_app(repository, app_id):
             if not run or not identity or check.get("conclusion") != "success" \
                     or check.get("status") != "completed":
                 continue
-            repository_id, number, source_id, attempt, head, base = identity.groups()
+            # The base SHA is recorded evidence only; main may have advanced since the check.
+            repository_id, number, source_id, attempt, head, _base = identity.groups()
             if int(repository_id) != repo["id"] or int(number) != pull["number"] \
                     or check.get("head_sha") != head or pull["head"]["sha"] != head \
-                    or pull["base"]["sha"] != base or actions_app(check, AWS_CHECK) != app_id:
+                    or actions_app(check, AWS_CHECK) != app_id:
                 continue
             try:
                 start = datetime.fromisoformat(run["created_at"].replace("Z", "+00:00"))
@@ -161,7 +162,6 @@ def observed_aws_check_app(repository, app_id):
                     or source.get("head_sha") != head or source.get("repository", {}).get("id") != repo["id"]:
                 continue
             if current.get("state") == "open" and current.get("head", {}).get("sha") == head \
-                    and current.get("base", {}).get("sha") == base \
                     and current.get("base", {}).get("ref") == "main" \
                     and current["base"].get("repo", {}).get("id") == repo["id"]:
                 return app_id
