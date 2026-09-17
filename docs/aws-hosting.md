@@ -1,7 +1,7 @@
 # Set up AWS hosting
 
 Use this guide for initial hosting setup, staging access, release recovery and
-domain migration. For routine changes to existing infrastructure, see
+the production domain. For routine changes to existing infrastructure, see
 [Deploy infrastructure and website changes through GitHub Actions](infrastructure-delivery.md).
 Run all commands from the repository root.
 
@@ -18,10 +18,9 @@ together as a **stack**. Use separate stacks for staging and production.
 The template prepares hosting resources and a GitHub deployment role. Steps 8–9
 below publish and verify a staging release manually. The [staging and production
 workflow](#deploy-staging-and-promote-to-production) handles subsequent
-releases. New stacks start with a generated CloudFront address. The
-[custom-domain migration](#move-the-production-domain-to-aws) below adds Route 53
-DNS and an ACM certificate. Production has completed this cutover; the previous
-Netlify deployment is locked and retained for DNS rollback.
+releases. New stacks start with a generated CloudFront address. Production serves
+its custom domain through Route 53 and an ACM certificate; see
+[Production domain](#production-domain).
 
 ## Existing budget
 
@@ -30,32 +29,12 @@ budgets. Budget notifications do not automatically stop AWS charges.
 
 ## Monitor availability and review costs
 
-`infra/monitoring.yaml` defines CloudFront request and error alarms for staging
-and production, with email notifications delivered through an SNS topic encrypted
-at rest. Deploy it separately in
-`us-east-1`. It uses default metrics and does not enable visitor access logs.
-
-See [Monitor AWS hosting and review monthly costs](aws-operations.md) for
-alarm thresholds, notification tests, cache-related diagnostic limits, logging
-retention, budget verification, and the monthly review procedure. The runbook
-includes a dated planning estimate covering both environments and release storage.
-
-Use [Rehearse recovery from a missing staging asset](aws-staging-failure-exercise.md)
-for the bounded failure procedure, cache invalidation, recovery, and evidence
-requirements. The [2026-09-16 incident report](aws-incident-2026-09-16.md)
-records the execution and monitoring findings. Keep the controlled failure
-exercise separate from a notification-only test or a successful-release rollback.
-
-Print the estimate, or summarize a saved Cost Explorer response, with:
-
-```sh
-python3 scripts/review-aws-costs.py
-python3 scripts/review-aws-costs.py --costs /tmp/aws-monthly-costs.json
-```
-
-The helper uses Python's standard library and does not call AWS. CloudFront
-alarms depend on traffic; an OK state during a quiet period is not proof of
-availability. Deployment checks continue to verify pages and assets on release.
+`infra/monitoring.yaml` defines CloudFront request and error alarms for both
+environments in a separate stack. See
+[Monitor AWS hosting and review monthly costs](aws-operations.md) for alarms,
+notifications, logging retention, the cost estimate and the monthly review. Use
+[Rehearse recovery from a missing staging asset](aws-staging-failure-exercise.md)
+for the controlled failure procedure.
 
 ## Before you start
 
@@ -631,51 +610,6 @@ operator's separate AWS identity. OIDC lets GitHub request temporary credentials
 without storing AWS access keys in GitHub. See
 [GitHub's AWS OIDC guide](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws).
 
-## Enable protection on an existing staging stack
-
-Changing the source files does not protect a running distribution. Coordinate
-the infrastructure update with the release workflow: the previous verifier
-cannot authenticate, and the new verifier refuses to publish to unprotected
-staging. Finish or stop active release operations and pause new merges during
-this transition. Use the checkout containing these changes for local checks.
-
-1. Complete **Set up staging credentials** and save the GitHub staging secret
-2. Preview the staging stack update below; omitted parameters retain their
-   current values on an existing stack, including OIDC ownership and custom domains
-
-    ```sh
-    aws cloudformation deploy \
-      --region "$AWS_REGION" \
-      --stack-name "$SITE_STACK" \
-      --template-file infra/site.yaml \
-      --capabilities CAPABILITY_IAM \
-      --parameter-overrides \
-        Environment=staging \
-        StagingAuthSecretArn="${SITE_STAGING_AUTH_SECRET_ARN:?Set the staging secret ARN}" \
-        StagingAuthSecretVersionId="${SITE_STAGING_AUTH_SECRET_VERSION_ID:?Set the staging secret version}" \
-      --no-execute-changeset
-    ```
-
-3. Inspect and execute the returned change set using the commands in steps 4–5.
-   Expect an update to `PageRewrite` and `Distribution`, plus the new
-   `StagingResponseHeaders` policy. The bucket, archives, deployment role, and
-   production stack should remain unchanged. For an existing stack, wait with
-   `stack-update-complete` instead of `stack-create-complete`.
-4. Confirm anonymous `GET` and `HEAD` requests return `401`. Open a fresh private
-   browser window, enter the password, and complete **Verify staging**. Previously
-   downloaded browser copies cannot be revoked by adding authentication.
-5. Use `node scripts/site-release.mjs verify --release-id CURRENT_RELEASE_ID`
-   with the staging environment settings to check the current release. This
-   checks exact file contents, authenticated access, `noindex`, browser cache
-   restrictions, and missing/incorrect credentials after authorized requests
-6. Merge the source changes through the usual review process and resume releases
-
-Expected result: staging requires the password and the updated release verifier
-passes. Updating the CloudFront function protects cache hits too, so enabling
-authentication does not depend on an invalidation. The viewer response uses
-`Cache-Control: private, no-store`; CloudFront's internal cache and the stored
-artifact metadata remain unchanged. Production retains its existing cache headers.
-
 ## Rotate the staging password
 
 1. Pause new releases and enter the new credentials using the hidden prompt in
@@ -700,9 +634,25 @@ artifact metadata remain unchanged. Production retains its existing cache header
 
 3. Set `SITE_STAGING_AUTH_SECRET_VERSION_ID` to the returned version ID and update
    the GitHub staging secret with the command in **Set up staging credentials**
-4. Preview and apply the staging stack update as described above, then verify
-   that the new password works and the old password receives `401`
-5. Resume releases and run `unset STAGING_BASIC_AUTH` in the local terminal
+4. Preview the staging stack update; omitted parameters retain their current values
+
+    ```sh
+    aws cloudformation deploy \
+      --region "$AWS_REGION" \
+      --stack-name "$SITE_STACK" \
+      --template-file infra/site.yaml \
+      --capabilities CAPABILITY_IAM \
+      --parameter-overrides \
+        Environment=staging \
+        StagingAuthSecretArn="${SITE_STAGING_AUTH_SECRET_ARN:?Set the staging secret ARN}" \
+        StagingAuthSecretVersionId="${SITE_STAGING_AUTH_SECRET_VERSION_ID:?Set the staging secret version}" \
+      --no-execute-changeset
+    ```
+
+5. Inspect and execute the returned change set using the commands in steps 4–5,
+   waiting with `stack-update-complete` instead of `stack-create-complete`
+6. Verify that the new password works and the old password receives `401`
+7. Resume releases and run `unset STAGING_BASIC_AUTH` in the local terminal
 
 Changing a Secrets Manager value alone does not refresh deployed function code.
 The explicit version parameter makes rotation an intentional CloudFormation
@@ -744,7 +694,7 @@ a primary domain still serves its generated hostname publicly. See
 | CloudFormation cannot resolve the digest           | Check the secret ARN, version ID, `authorizationSha256` JSON key, and execution identity's secret/key permissions                |
 | Correct browser credentials receive `401`          | Recompute the digest from the exact UTF-8 `username:password`, deploy the matching secret version, and retry in a private window |
 | Deployment reports missing or rejected credentials | Set the staging environment secret in GitHub or `STAGING_BASIC_AUTH` locally; confirm it matches the deployed digest             |
-| Deployment reports staging is unprotected          | Apply the staging infrastructure update before running the new release workflow                                                  |
+| Deployment reports staging is unprotected          | Confirm the staging stack's latest update completed with both authentication secret parameters set                               |
 | Verification fails on indexing or cache headers    | Confirm the staging response headers policy is attached and deployed                                                             |
 | Google still lists a staging URL                   | Keep authentication enabled; removal requires recrawling or a Search Console removal request                                     |
 
@@ -779,8 +729,8 @@ stack's original identity-provider ownership parameter unchanged.
 
 Expected result: `static-site-production` reaches `CREATE_COMPLETE` and returns
 its own bucket, distribution, deployment role, and HTTPS URL. The production URL
-initially uses the CloudFront hostname. Custom-domain and DNS cutover are separate
-steps.
+initially uses the CloudFront hostname. The custom domain is configured
+separately; see [Production domain](#production-domain).
 
 ## Configure production approval
 
@@ -974,20 +924,12 @@ publishing jobs. Each job checks the manifest, archive, and unpacked files. S3
 uploads use `If-None-Match: *`; an identical retry is accepted after comparing the
 existing bytes, and conflicting contents fail. The bucket policy requires this
 conditional creation under `releases/v1/`. Existing legacy archives stay under
-their original prefixes.
-
-Apply the updated `infra/site.yaml` through a reviewed change set to each stack
-to enable the bucket-policy safeguard. Preserve existing stack parameters,
-including the staging-owned OIDC provider and production custom domain. New
-publishing tools work before this policy update, but policy enforcement starts
-only when the stack update completes. Administrators can still deliberately
-delete archives or change the policy; this is not regulatory Object Lock.
+their original prefixes. Administrators can still deliberately delete archives
+or change the policy; this is not regulatory Object Lock.
 
 Publishing and rollback workflows share one concurrency group, including the
 production approval wait. CLI operations also acquire a lock through a
-conditional write to `releases/state.json`. Do not run the previous publishing
-workflow alongside the new CLI during initial migration; the previous workflow
-does not use this lock.
+conditional write to `releases/state.json`.
 
 ### Configure CLI access to one environment
 
@@ -1092,82 +1034,13 @@ node scripts/site-release.mjs rollback \
 Expected result: successful HTTP verification, a recorded recovery duration, and
 active/previous references that reflect each successful restoration. After each
 restore, check real-time slug generation, copying, and direct loads/refreshes on
-all four pages. This is application rollback; [DNS rollback](#roll-back-website-dns)
-changes the hosting destination and is a separate operation.
-
-### Staging rehearsal results — 2026-09-15
-
-The operator restored a previously successful archived release without rebuilding
-it, then republished the original current archive to return staging to its
-baseline. Both operations used the shared release tool.
-
-| Operation                              | Measured duration | Verification completed (UTC) |
-| -------------------------------------- | ----------------- | ---------------------------- |
-| Restore the previous release           | 65 seconds        | 16:36:12                     |
-| Republish the original current release | 86 seconds        | 16:39:36                     |
-
-These durations cover the release operation from lock acquisition through upload,
-CloudFront invalidation, and HTTP verification. They exclude archive retrieval
-and extraction, GitHub queue time, and approval time; they are not a complete
-incident recovery-time measurement.
-
-- All 33 manifest files and seven page-route variants passed exact content, size, MIME type, and cache-header checks before rollback, after rollback, and after restoration
-- Missing assets and unknown routes returned errors, and anonymous direct S3 access returned `403`
-- Browser checks after both restorations passed real-time conversion, keyboard copy, and direct loads and refreshes on all four pages
-- Final release state recorded the original current release as active, the rehearsed release as previous, and no pending operation
-- Archive writes without the required condition returned `AccessDenied`; conditional attempts to recreate existing objects returned `PreconditionFailed`; identical publisher retries succeeded after byte comparison
-- The retention preview selected no archives for deletion, and no cleanup deletion was performed
-- Production received no writes; its entry object's version, ETag, and modification time matched the pre-exercise baseline
-
-The two selected archives came from different successful commits but contained
-the same website files, so this rehearsal verified archive restoration and
-metadata handling without a visible application-version change. The controlled
-failure exercise remains separate work in [#66](https://github.com/joshuamae/slugify.me/issues/66).
-
-### Verify the merged release workflows — 2026-09-15
-
-[PR #78](https://github.com/joshuamae/slugify.me/pull/78) merged the release tools
-and workflows. The subsequent [deployment run](https://github.com/joshuamae/slugify.me/actions/runs/35002257182)
-passed checks and the production build, then published and verified the same
-archive in staging and production using temporary AWS credentials. GitHub
-recorded the owner's production approval; administrator bypass was disabled.
-
-The **Roll back site** workflow then restored the previous staging archive and
-returned staging to its original current release. Both runs downloaded their
-archives from S3 without rebuilding the application.
-
-| Operation                                    | Measured duration | Verification completed (UTC) | Evidence                                                                            |
-| -------------------------------------------- | ----------------- | ---------------------------- | ----------------------------------------------------------------------------------- |
-| Restore the previous staging release         | 62 seconds        | 17:56:07                     | [Rollback run](https://github.com/joshuamae/slugify.me/actions/runs/35004201885)    |
-| Restore the original current staging release | 71 seconds        | 17:59:24                     | [Restoration run](https://github.com/joshuamae/slugify.me/actions/runs/35004513823) |
-
-These durations use the same operation boundaries as the earlier rehearsal and
-exclude archive retrieval, extraction, queue time, and approval time.
-
-- Both staging runs passed all 33 file checks and seven page-route checks, including exact contents, sizes, MIME types, and cache headers
-- Missing assets and unknown routes returned errors, and anonymous direct S3 access was denied
-- Browser checks after both staging runs passed accented and non-ASCII conversion, keyboard copy confirmation, and direct loads and refreshes on all four pages
-- Final staging state recorded the original current release as active, the rehearsed release as previous, and no pending operation
-- The reviewed production stack update changed only the bucket policy, required conditional archive creation, and completed without resource replacement
-- The previous production archive was checked against its recorded SHA-256 and registered with a manifest as an explicit rollback candidate
-- Production's current archive passed all 40 file and route checks after the policy update and archive registration
-
-Production's `previous` reference was `null` at the end of the 2026-09-15
-rehearsal. Subsequent successful publications populated it automatically.
-On 2026-09-16, both environments recorded active release
-`2882b3186feb-35117898185-1`, previous release
-`59360c0fd0e3-35107837010-1`, and `pending: null`.
-The [successful deployment](https://github.com/joshuamae/slugify.me/actions/runs/35117898185)
-verified all 40 file/route checks in staging at 15:52:09 UTC and production at
-15:54:46 UTC. This completes the remaining state criterion in
-[#57](https://github.com/joshuamae/slugify.me/issues/57).
+all four pages. This restores website files only; it does not change DNS or
+infrastructure.
 
 Registering an older archive does not change active/previous history. A successful
 publication of a different release moves the existing active release to
 `previous`; restoring the current release preserves the existing previous
 reference. Do not edit state manually or use `adopt` on an initialized environment.
-See the separate [controlled failure exercise](aws-staging-failure-exercise.md)
-and [incident report](aws-incident-2026-09-16.md) for #66.
 
 ### Recover an interrupted operation
 
@@ -1229,354 +1102,34 @@ permissions; operator cleanup additionally requires `s3:ListBucketVersions` and
 - A failed upload can leave mixed pages; rollback restores the selected manifest's files and retains older hashed assets
 - If a new file extension appears, define and test its MIME type in the release tool before deployment
 
-## Move the production domain to AWS
-
-Use `infra/domain.yaml` for a public Route 53 hosted zone, the website DNS
-records, an optional Google verification TXT record, and a DNS-validated ACM
-certificate. Domain registration can stay at the existing registrar. The site
-stack accepts `PrimaryDomainName` and `CertificateArn` together; their empty
-defaults preserve CloudFront-only hosting for staging.
-
-This procedure changes DNS in two stages: first preserve the previous website
-while moving DNS hosting, then switch website traffic to the verified CloudFront
-distribution. Keep the previous hosting deployment available throughout the
-migration and rollback window.
-
-### 1. Record the current DNS configuration
-
-1. Export or copy the complete record list from the current DNS provider
-2. Save the registrar's existing nameservers and any DNSSEC/DS configuration
-3. Record the website's apex destination, resolved IPv4 addresses, and `www` target
-4. Check all other records, including mail, verification, and service subdomains
-5. Compare the new zone with this inventory before changing nameservers
-
-Public DNS lookups cannot enumerate every record in a zone. Use the provider's
-complete inventory. The template manages apex/`www` website records and one
-optional Google TXT token; copy any other records using the required inventory
-step below. Do not overwrite Route 53's generated apex NS and SOA records with
-the old provider's values. Preserve NS and DS records for delegated subdomains.
-
-A third-party apex ALIAS cannot be copied directly into a Route 53 alias pointing
-to a non-AWS host. `PreviousIpv4Addresses` stores the verified previous website
-IPv4 addresses as ordinary A records for the migration and rollback period.
-Confirm these addresses remain valid with the previous host before rollback.
-Each address must have four octets from 0 to 255 without leading zeros; invalid
-addresses are rejected during CloudFormation parameter validation.
-
-Set the following values from your inventory and production stack:
-
-```sh
-export AWS_REGION="us-east-1"
-export AWS_PAGER=""
-export SITE_REPOSITORY="OWNER/REPOSITORY"
-export SITE_DOMAIN="example.com"
-export SITE_DOMAIN_STACK="static-site-domain"
-export SITE_PREVIOUS_IPV4="PREVIOUS_IPV4_ADDRESS,SECOND_PREVIOUS_IPV4_ADDRESS"
-export SITE_PREVIOUS_WWW="PREVIOUS_WWW_CNAME_TARGET"
-export SITE_GOOGLE_VERIFICATION="EXISTING_VERIFICATION_TOKEN"
-export SITE_CF_HOST="PRODUCTION_DISTRIBUTION.cloudfront.net"
-```
-
-Use an empty `SITE_GOOGLE_VERIFICATION` if no Google verification record exists.
-Do not include the `google-site-verification=` prefix in the token variable.
-Keep the real DNS backup outside the public repository.
-
-### 2. Create an inactive Route 53 zone
-
-Validate and prepare the initial change set:
-
-```sh
-aws cloudformation validate-template \
-  --region us-east-1 --template-body file://infra/domain.yaml
-
-aws cloudformation deploy \
-  --region us-east-1 --stack-name "$SITE_DOMAIN_STACK" \
-  --template-file infra/domain.yaml \
-  --parameter-overrides \
-    "DomainName=$SITE_DOMAIN" \
-    "PreviousIpv4Addresses=$SITE_PREVIOUS_IPV4" \
-    "PreviousWwwTarget=$SITE_PREVIOUS_WWW" \
-    "GoogleSiteVerification=$SITE_GOOGLE_VERIFICATION" \
-    EnableCertificate=false TrafficTarget=previous \
-    "CloudFrontDomainName=$SITE_CF_HOST" \
-  --no-execute-changeset
-```
-
-Review and execute the returned change set using the review procedure in step 4
-of the staging setup. Wait for `stack-create-complete`, then retrieve the zone:
-
-```sh
-export SITE_ZONE_ID="$(aws cloudformation describe-stacks \
-  --region us-east-1 --stack-name "$SITE_DOMAIN_STACK" \
-  --query "Stacks[0].Outputs[?OutputKey=='HostedZoneId'].OutputValue | [0]" \
-  --output text)"
-
-aws route53 list-resource-record-sets --hosted-zone-id "$SITE_ZONE_ID"
-aws route53 get-hosted-zone --id "$SITE_ZONE_ID" \
-  --query DelegationSet.NameServers --output text
-```
-
-Expected result: the new zone contains the previous website targets and existing
-verification token. The registrar still points at the old DNS provider, so live
-website traffic is unchanged. Query each new authoritative nameserver directly
-with `dig @NAMESERVER example.com A` and compare its records with the inventory.
-
-#### Copy and verify the remaining DNS inventory
-
-Complete this step before certificate setup or nameserver delegation. If the
-inventory contains only the website records and the optional Google TXT record,
-confirm that each is present and skip the import command.
-
-Otherwise, create a JSON change batch outside the repository containing every
-remaining record set. Use the [Route 53 CLI record formats](https://docs.aws.amazon.com/cli/latest/reference/route53/change-resource-record-sets.html)
-to translate the provider's export; its raw export is not necessarily a valid
-change batch. The following example shows the structure for MX and TXT records.
-Replace the example records with the complete inventory before running it:
-
-```json
-{
-	"Comment": "Preserve existing non-website DNS records before delegation",
-	"Changes": [
-		{
-			"Action": "CREATE",
-			"ResourceRecordSet": {
-				"Name": "example.com.",
-				"Type": "MX",
-				"TTL": 600,
-				"ResourceRecords": [{ "Value": "10 mail.example.com." }]
-			}
-		},
-		{
-			"Action": "CREATE",
-			"ResourceRecordSet": {
-				"Name": "_verification.example.com.",
-				"Type": "TXT",
-				"TTL": 600,
-				"ResourceRecords": [
-					{ "Value": "\"EXISTING_VERIFICATION_VALUE\"" }
-				]
-			}
-		}
-	]
-}
-```
-
-Preserve each name, type, TTL, value, and MX/SRV priority. Include all service
-A/AAAA, CNAME, TXT, MX, CAA, SRV, and delegated-subdomain records from the
-inventory. Group values with the same name and type in one `ResourceRecords`
-array. Exclude the stack-managed website and Google TXT records, generated apex
-NS/SOA records, and certificate validation records already present in the zone.
-
-If additional values share a record set managed by CloudFormation, such as an
-apex SPF TXT value alongside the Google TXT value, extend that template resource
-to contain every value and apply a reviewed stack update instead. Do not modify
-stack-managed record sets through the import command.
-
-Review the complete batch, then apply it to the new zone:
-
-```sh
-export SITE_DNS_IMPORT_FILE="$HOME/dns-backup/additional-records.json"
-
-SITE_DNS_CHANGE_ID="$(aws route53 change-resource-record-sets \
-  --hosted-zone-id "$SITE_ZONE_ID" \
-  --change-batch "file://$SITE_DNS_IMPORT_FILE" \
-  --query ChangeInfo.Id --output text)" &&
-aws route53 wait resource-record-sets-changed --id "$SITE_DNS_CHANGE_ID"
-
-aws route53 list-resource-record-sets --hosted-zone-id "$SITE_ZONE_ID"
-```
-
-`CREATE` refuses to overwrite existing record sets. If it reports a duplicate,
-compare the existing values with the inventory before correcting the batch;
-do not switch blindly to `UPSERT`. Imported records remain managed separately
-from this CloudFormation stack. Keep their backup and change history.
-
-Expected result: every source record is accounted for in the new zone, apart
-from the intentionally replaced apex NS/SOA and translated website ALIAS.
-Compare the full record listing and query all four new authoritative nameservers
-for each migrated name and type. Stop before delegation if any record is missing
-or differs unexpectedly. A successful stack update alone does not verify the
-complete inventory.
-
-### 3. Validate the certificate before cutover
-
-Add the certificate through another reviewed change set:
-
-```sh
-aws cloudformation deploy \
-  --region us-east-1 --stack-name "$SITE_DOMAIN_STACK" \
-  --template-file infra/domain.yaml \
-  --parameter-overrides EnableCertificate=true \
-  --no-execute-changeset
-```
-
-After executing this update, ACM requests a certificate for the apex domain and
-`www`. CloudFormation adds validation CNAMEs to the new Route 53 zone. While the
-old provider is authoritative, copy those exact CNAME names and values into the
-old provider too. These records prove ownership without changing website traffic.
-
-Find the pending certificate ARN and its required DNS records:
-
-```sh
-aws acm list-certificates --region us-east-1 \
-  --query "CertificateSummaryList[?DomainName=='$SITE_DOMAIN'].[CertificateArn,Status]" \
-  --output table
-
-export SITE_CERTIFICATE_ARN="CERTIFICATE_ARN_FROM_THE_TABLE"
-
-aws acm describe-certificate --region us-east-1 \
-  --certificate-arn "$SITE_CERTIFICATE_ARN" \
-  --query 'Certificate.DomainValidationOptions[*].ResourceRecord'
-```
-
-Enter these records as **CNAME** records. DNS-provider UIs may expect only the
-host portion instead of the full name; check that the domain is not duplicated.
-Keep the validation records in both zones throughout migration, and retain them
-in Route 53 for automatic renewal.
-
-```sh
-aws acm wait certificate-validated --region us-east-1 \
-  --certificate-arn "$SITE_CERTIFICATE_ARN"
-
-aws cloudformation wait stack-update-complete --region us-east-1 \
-  --stack-name "$SITE_DOMAIN_STACK"
-```
-
-Expected result: ACM reports `ISSUED` and the domain stack reports
-`UPDATE_COMPLETE`. Keep `EnableCertificate=true` on later updates. Changing the
-domain or disabling the certificate can remove retained resources from stack
-management; neither is part of normal cutover or rollback.
-
-### 4. Attach the domain to production and test it
-
-Prepare a production site-stack update. Omitted existing parameters retain their
-current values, including the shared GitHub identity provider:
-
-```sh
-aws cloudformation deploy \
-  --region us-east-1 --stack-name static-site-production \
-  --template-file infra/site.yaml --capabilities CAPABILITY_IAM \
-  --parameter-overrides \
-    "PrimaryDomainName=$SITE_DOMAIN" \
-    "CertificateArn=$SITE_CERTIFICATE_ARN" \
-  --no-execute-changeset
-```
-
-Review the change set before execution. Expect the existing distribution and
-page function to update without replacing the bucket, distribution, or role.
-Wait for `stack-update-complete` and for the distribution to be deployed.
-
-Use curl's `--connect-to` to test AWS while public DNS still serves the previous
-host. This changes the connection destination while preserving the real hostname
-for TLS certificate validation and the HTTP Host header:
-
-```sh
-curl --fail --show-error --silent \
-  --connect-to "$SITE_DOMAIN:443:$SITE_CF_HOST:443" \
-  --dump-header - "https://$SITE_DOMAIN/about"
-
-curl --show-error --silent --head \
-  --connect-to "www.$SITE_DOMAIN:443:$SITE_CF_HOST:443" \
-  "https://www.$SITE_DOMAIN/about?source=dns-check"
-
-curl --show-error --silent --head \
-  "https://$SITE_CF_HOST/about?source=dns-check"
-```
-
-Verify all four routes, generated assets, robots.txt, sitemap.xml, canonical URLs,
-content types, and cache headers against the current production release. Confirm
-both `www` and the production CloudFront hostname return a `301` to the HTTPS
-apex domain, preserving the original path and query parameters. The apex domain
-serves the requested content without a hostname redirect. Staging keeps serving
-its CloudFront hostname because it has no configured primary domain.
-Do not use `--insecure`; a valid certificate is part of this check.
-
-Pause production publishing between attaching the custom domain and completing
-DNS cutover. During that interval, use the apex hostname with `--connect-to` for
-AWS content verification; the CloudFront hostname now redirects and cannot serve
-as the publisher's verification URL. Once public DNS reaches AWS, set the GitHub
-production `SITE_URL` variable to the stack's `SiteUrl` output before resuming
-publishing. `CloudFrontUrl` identifies the connection endpoint for pre-cutover
-tests, not an alternate public website address after the domain is attached.
-
-### 5. Move DNS hosting, then website traffic
-
-1. Complete **Copy and verify the remaining DNS inventory**, wait for imported changes to reach `INSYNC`, and verify the entire zone including ACM CNAMEs before continuing
-2. Follow the DNSSEC steps in [AWS's migration procedure](https://docs.aws.amazon.com/Route53/latest/DeveloperGuide/migrate-dns-domain-in-use.html) if a DS record exists at the parent zone
-3. At the registrar, replace the old nameservers with all four nameservers from the new hosted zone
-4. Keep the old provider's zone intact while cached delegations expire
-5. Verify public delegation and authoritative answers; website records should still point to the previous host
-6. Prepare and review the website cutover change set below
-
-```sh
-aws cloudformation deploy \
-  --region us-east-1 --stack-name "$SITE_DOMAIN_STACK" \
-  --template-file infra/domain.yaml \
-  --parameter-overrides TrafficTarget=cloudfront \
-  --no-execute-changeset
-```
-
-Execute only after hostname verification succeeds. This changes the apex and
-`www` records to IPv4 and IPv6 CloudFront aliases. It preserves the TXT record,
-validation CNAMEs, and unrelated records. Wait for `stack-update-complete`, then
-check public DNS and HTTPS through normal resolution. Cached old answers can
-continue reaching the previous host until their TTLs expire.
-
-After public DNS and HTTPS verification succeed, update GitHub's production URL:
-
-```sh
-gh variable set SITE_URL --repo "$SITE_REPOSITORY" \
-  --env production --body "https://$SITE_DOMAIN"
-```
-
-Repeat the browser checks in step 9 at the custom domain: real-time conversion,
-copying, direct navigation, and refresh on every route. Record the release,
-certificate, DNS answers, response headers, redirects, metadata, and verification
-time before marking the cutover complete.
-
-### Roll back website DNS
-
-Keep the last known-good deployment available at the previous host. To restore
-its website records, prepare and execute a reviewed domain-stack update:
-
-```sh
-aws cloudformation deploy \
-  --region us-east-1 --stack-name "$SITE_DOMAIN_STACK" \
-  --template-file infra/domain.yaml \
-  --parameter-overrides TrafficTarget=previous \
-  --no-execute-changeset
-```
-
-This restores the saved apex A records and `www` CNAME and removes the CloudFront
-AAAA aliases. Verify the previous host's HTTPS pages after DNS caches expire.
-DNS rollback is not immediate, and it does not restore files within the AWS
-bucket. For application release rollback, use the separate release procedure.
-
-If the problem is DNS delegation itself, restore the original nameservers at the
-registrar from the saved inventory. Keep both zones intact until caches expire.
-Do not delete the Route 53 zone, remove ACM validation CNAMEs, or detach the
-certificate as part of website DNS rollback.
-
-### Retain the previous deployment for rollback
-
-The verified production cutover removes `netlify.toml` and the Netlify status
-badge from this repository. Keep the previous Netlify deployment locked and
-available for the rollback window. Removing the configuration file does not
-disconnect Netlify's GitHub integration or stop builds. See Netlify's
-[deployment management instructions](https://docs.netlify.com/deploy/manage-deploys/manage-deploys-overview/)
-to manage automatic publishing. Hosting/privacy disclosures must describe the
-actual hosting and logging configuration as part of #70.
-
-The domain stack retains its zone, records, and certificate if deleted. Inspect
-retained resources separately during eventual teardown; deleting the stack is
-not a DNS rollback procedure.
+## Production domain
+
+`infra/domain.yaml` manages the production Route 53 hosted zone, the apex and
+`www` website records, an optional Google verification TXT record, and a
+DNS-validated ACM certificate. Domain registration stays with the existing
+registrar. The production pipeline updates this stack before production hosting
+and preserves its current parameter values.
+
+- Keep `EnableCertificate=true` and `TrafficTarget=cloudfront`; the certificate is attached to the production distribution
+- Keep the ACM validation CNAMEs in Route 53 so the certificate renews automatically
+- Do not change `DomainName` or replace the hosted zone
+- Change stack-managed records through the template; records added directly in Route 53, such as mail or service records, are not managed by this stack
+- `PreviousIpv4Addresses` and `PreviousWwwTarget` still hold the former host's values and are unused while `TrafficTarget` is `cloudfront`
+- Deleting the stack retains the zone, records, and certificate
+
+The production site stack sets `PrimaryDomainName` and `CertificateArn`. Its
+CloudFront hostname and `www` return a `301` redirect to the HTTPS apex domain,
+so GitHub's production `SITE_URL` variable must use the stack's `SiteUrl`
+output rather than the CloudFront hostname.
 
 ## Update an existing stack
 
-For a stack created before `GitHubOidcSubjectPrefix` was added, first follow
-[Correct an existing stack's GitHub identity](#correct-an-existing-stacks-github-identity).
-Leaving this parameter empty preserves the older name-only trust policy, which
-will reject tokens from a repository using immutable subjects.
+Keep `GitHubOidcSubjectPrefix` set. An empty value falls back to the older
+name-only trust policy, which rejects tokens from a repository using immutable
+subjects. If the repository is renamed, transferred, or changes its OIDC subject
+configuration, repeat the prefix lookup in step 1 and override only
+`GitHubOidcSubjectPrefix` in a new change set. Do not broaden the trust policy
+with wildcards to make authentication pass.
 
 Set `SITE_STACK` to the existing stack you intend to update. Preserve its current
 parameters by omitting `--parameter-overrides`:
@@ -1609,61 +1162,6 @@ aws cloudformation wait stack-update-complete \
 
 Expected result: `UPDATE_COMPLETE`. If AWS reports no changes, there is no new
 change set to execute.
-
-## Correct an existing stack's GitHub identity
-
-Use this procedure if the credential step reports
-`Not authorized to perform sts:AssumeRoleWithWebIdentity` and the role's expected
-subject differs from GitHub's configured identity. Other authorization failures
-can have different causes; compare the identity and audience before changing them.
-
-1. Use the updated `infra/site.yaml` containing `GitHubOidcSubjectPrefix`
-2. Set the target stack and read its existing repository parameter
-
-```sh
-export AWS_REGION="us-east-1"
-export AWS_PAGER=""
-export SITE_STACK="static-site-staging"
-
-SITE_REPOSITORY="$(
-  aws cloudformation describe-stacks \
-    --region "$AWS_REGION" \
-    --stack-name "$SITE_STACK" \
-    --query "Stacks[0].Parameters[?ParameterKey=='GitHubRepository'].ParameterValue | [0]" \
-    --output text
-)" && export SITE_REPOSITORY
-```
-
-3. Repeat the OIDC prefix lookup in step 1 of the setup guide; stop if it fails or returns an empty value
-4. Validate the updated template as in step 3, then preview this parameter update
-
-```sh
-(
-  set -e
-  : "${SITE_OIDC_SUBJECT_PREFIX:?Read the GitHub OIDC prefix before continuing}"
-  aws cloudformation deploy \
-    --region "$AWS_REGION" \
-    --stack-name "$SITE_STACK" \
-    --template-file infra/site.yaml \
-    --capabilities CAPABILITY_IAM \
-    --parameter-overrides \
-      GitHubOidcSubjectPrefix="$SITE_OIDC_SUBJECT_PREFIX" \
-    --no-execute-changeset
-)
-```
-
-5. Save the returned change-set ARN as `SITE_CHANGE_SET_ARN` and inspect it using the command in step 4 of the setup guide
-6. For this correction alone, expect only `DeployRole` to change, with no replacement; investigate any additional changes before executing
-7. Execute the reviewed change set and wait for `UPDATE_COMPLETE` using the commands in **Update an existing stack**
-8. In **Actions**, open the failed **Deploy staging** run, choose **Re-run jobs**, then **Re-run failed jobs**
-9. Confirm temporary credentials, S3 upload, invalidation, and HTTP verification succeed, then complete the browser checks
-
-Only `GitHubOidcSubjectPrefix` is overridden. CloudFormation preserves the current
-values of the other parameters, including ownership of the shared identity
-provider. Do not change the GitHub identity format or broaden the trust policy
-with wildcards to make authentication pass. If the repository is renamed,
-transferred, or changes its OIDC subject configuration, review the returned
-prefix and update the stack through a new change set.
 
 ## Troubleshooting
 
